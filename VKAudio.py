@@ -1,0 +1,165 @@
+#!/usr/bin/python3
+# VK Audio Player
+
+import vlc, curses, locale, random
+from api import *
+from utils import *; logstart('VKAudio')
+
+db.setfile('VKAudio.db')
+db.setbackup(False)
+tokens.require('access_token', 'messages,offline')
+
+def main(stdscr):
+	curses.curs_set(False)
+	curses.use_default_colors()
+	stdscr.nodelay(True)
+	#locale.setlocale(locale.LC_ALL, '')
+	retex = None
+
+	p = vlc.MediaPlayer()
+	p.get_instance().log_unset()
+	p.audio_set_volume(100)
+
+	peer_id = int()
+
+	def loadDialogs():
+		nonlocal ll
+		if (ll <= 1): stdscr.addstr(0, 0, 'Loading'.center(stdscr.getmaxyx()[1]), curses.A_STANDOUT); stdscr.refresh()
+		r = dialogs(offset=len(l)-1, extended=1)
+		for i in r['items']:
+			if (i['conversation']['peer']['type'] == 'user'): u = S(r['profiles'])['id', i['conversation']['peer']['id']][0]; l.insert(-1, S(u)&{'name': ' '.join(S(u)@['first_name', 'last_name'])})
+			elif (i['conversation']['peer']['type'] == 'chat'): l.insert(-1, {'name': i['conversation']['chat_settings']['title'], 'id': i['conversation']['peer']['id']})
+			elif (i['conversation']['peer']['type'] == 'group'): l.insert(-1, S(r['groups'])['id', -i['conversation']['peer']['id']][0])
+		l[-1] = bool(r['items'])
+		ll = len(l)-1
+		#log(1, str(l))
+		#while (True): pass
+	def loadAudios():
+		nonlocal ll
+		if (ll <= 1): stdscr.addstr(0, 0, 'Loading'.center(stdscr.getmaxyx()[1]), curses.A_STANDOUT); stdscr.refresh()
+		r = API.messages.getHistoryAttachments(peer_id=peer_id, media_type='audio', start_from=l[-1])
+		for i in S(r['items'])@['attachment']@['audio']:
+			if (len(l) < 2 or l[-2] != i): l.insert(-1, i)
+		l[-1] = r.get('next_from')
+		ll = len(l)-1
+	def selectDialog():
+		nonlocal n, mode, peer_id
+		if (n > ll): n -= 1; return
+		if (type(l[n]) == bool): loadDialogs(); return
+		peer_id = l[n]['id']
+		mode = 1
+	def playTrack():
+		nonlocal n, cs, cu, track
+		if (n > ll): n -= 1; return
+		if (type(l[n]) == str): loadAudios(); return
+		cs, cu = n, peer_id
+		p.stop()
+		stdscr.addstr(h, 1, 'Loading...')
+		try: p.set_mrl(l[n]['url']); p.play()
+		except: track = 'Error'
+	def strfTime(t): return time.strftime('%H:%M:%S', time.gmtime(t)).lstrip('0').lstrip(':')
+	def debugOut(s): s = str(s); stdscr.addstr(0, (stdscr.getmaxyx()[1]-len(s))//2-1, s, curses.A_STANDOUT)
+
+	n, t, ll, ln, mode = (int(),)*5
+	cl, cs, cu, lmode = (-1,)*4
+	track = str()
+	l = list()
+
+	while (True):
+		try:
+			h, w = stdscr.getmaxyx(); h -= 2
+			if (mode >= 0): stdscr.erase()
+			if (mode == -2): break
+			elif (mode == -1):
+				eh, ew = 8, 23
+				ep = stdscr.subpad(eh, ew, (h-eh)//2, (w-ew)//2)
+				ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
+				for i in range(1, eh-1): ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
+				ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
+				for ii, i in enumerate('Are you sure you\nwant to exit?\nPress the key again\nto exit or Enter\nto stay.'.split('\n')): ep.addstr(1+ii, 2, i.center(ew-3), curses.A_BOLD)
+			elif (mode == 0):
+				if (lmode != mode): l = [True]; loadDialogs(); n = ln; lmode = mode
+				for i in range(t, min(t+h, len(l))):
+					if (l[i] == True): stdscr.addstr(i-t, 0, 'Load more...', curses.A_STANDOUT*(i==n)); continue
+					elif (l[i] == False): stdscr.addstr(i-t, 0, 'End.', curses.A_STANDOUT*(i==n)); ll = len(l)-2; continue
+					stdscr.addstr(i-t, 0, S(l[i]['name']).fit(w), curses.A_STANDOUT*(i==n))
+			elif (mode == 1):
+				if (lmode != mode): l = [str()]; loadAudios(); ln = n; n = 0; lmode = mode
+				for i in range(t, min(t+h, len(l))):
+					if (type(l[i]) == str): stdscr.addstr(i-t, 0, 'Load more...', curses.A_STANDOUT*(i==n)); continue
+					elif (not l[i]): stdscr.addstr(i-t, 0, 'End.', curses.A_STANDOUT*(i==n)); ll = len(l)-2; continue
+					title = ['%s — %s' % (l[i]['artist'], l[i]['title'])]
+					title.append('HQ '*l[i]['is_hq']+strfTime(l[i]['duration']))
+					title[0] = S(title[0]).fit(w-len(title[1])-2)
+					title = '%s %s' % (title[0], title[1].rjust(w-len(title[0])-1))
+					stdscr.addstr(i-t, 0, title, curses.A_STANDOUT*(i==n) | curses.A_BOLD*(i==cs and peer_id==cu))
+			pl = p.get_length() if (p.get_length() != -1) else 0
+			pp = p.get_position() if (p.get_position() != -1) else 0
+			pgrstr = '%s/%s │%%s│ %s' % (strfTime(pl*pp/1000), strfTime(pl/1000), time.strftime('%X'))
+			pgrlen = w-len(pgrstr)
+			#debugOut((pgrstr+' ') % '%s: %s' % (n, int(pp*pgrlen+1*bool(pp))))
+			try: assert (peer_id == cu and cs != -1); track = ('%s — %s' % (l[cs]['artist'], l[cs]['title']))
+			except: pass
+			stdscr.addstr(h, 1, S(track).fit(w-2).ljust(w-2), curses.A_UNDERLINE)
+			stdscr.addstr(h+1, 1, pgrstr % ('█'*int(pp*pgrlen+1*bool(pp))+'░'*(pgrlen-int(pp*pgrlen+bool(pp)))))
+			stdscr.addstr(h+1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not p.is_playing()))
+			if (pp > 0.99 and not p.is_playing()):
+				n = (cs+1) % len(l)
+				while (n >= t+h): t = min(t+1, ll-h+1)
+				playTrack()
+
+			c = stdscr.getch()
+			if (c != -1): cl = c
+			if (c == 1): pass
+			elif (c == curses.KEY_UP):
+				n = max(n-1, 0)
+				while (n < t): t = max(t-1, 0)
+			elif (c == curses.KEY_DOWN):
+				n = min(n+1, ll)
+				while (n >= t+h): t = min(t+1, ll-h+1)
+			elif (c == curses.KEY_PPAGE):
+				n = max(n-h, 0)
+				while (n < t): t = max(t-1, 0)
+			elif (c == curses.KEY_NPAGE):
+				n = min(n+h, ll)
+				while (n >= t+h): t = min(t+1, ll-h+1)
+			elif (c == curses.KEY_HOME):
+				n = 0
+				while (n < t): t = max(t-1, 0)
+			elif (c == curses.KEY_END):
+				n = ll
+				while (n >= t+h): t = min(t+1, ll-h+1)
+			elif (c == curses.KEY_LEFT):
+				if (mode == 1): p.set_position(p.get_position()-0.01)
+			elif (c == curses.KEY_RIGHT):
+				if (mode == 1): p.set_position(p.get_position()+0.01)
+			elif (c in range(ord('0'), ord('9')+1)):
+				if (mode == 1): p.set_position(0.1*('1234567890'.index(chr(c))))
+			elif (c == ord(' ') or c == ord('p')):
+				if (mode == 1): p.pause()
+			elif (c == ord('\n')):
+				if (mode == -1): mode = 0
+				elif (mode == 0): selectDialog()
+				elif (mode == 1): playTrack()
+			elif (c == ord('q') or c == ord('\033') or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): mode -= 1
+			elif (c == ord('a')):
+				n = (cs+1) % len(l)
+				while (n >= t+h): t = min(t+1, ll-h+1)
+				playTrack()
+			elif (c == ord('s')):
+				p.stop()
+				cs = -1
+
+			stdscr.refresh()
+		except Exception as ex: pass
+		except KeyboardInterrupt as ex: retex = ex; break
+	p.stop()
+	return retex
+
+if (__name__ == '__main__'):
+	logstarted()
+	db.load()
+	#tokens.access_token
+	#locklog()
+	exit(curses.wrapper(main))
+else: logimported()
