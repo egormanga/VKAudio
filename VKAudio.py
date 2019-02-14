@@ -1,30 +1,50 @@
 #!/usr/bin/python3
 # VK Audio Player
 
-import vlc, curses, locale, random
+import vlc, html, vaud, curses, locale, random
 from api import *
+from curses.textpad import Textbox
 from utils import *; logstart('VKAudio')
 
-db.setfile('VKAudio.db')
+vk_sid = str()
+db.setfile(os.path.realpath(os.path.dirname(sys.argv[0])+'/VKAudio.db'))
 db.setbackup(False)
+db.register('vk_sid')
 tokens.require('access_token', 'messages,offline')
 
 def main(stdscr):
 	curses.curs_set(False)
 	curses.use_default_colors()
 	stdscr.nodelay(True)
-	#locale.setlocale(locale.LC_ALL, '')
-	retex = None
 
 	p = vlc.MediaPlayer()
 	p.get_instance().log_unset()
 	p.audio_set_volume(100)
 
+	user_id = user()[0]['id']
 	peer_id = int()
+	url_decoder = vaud.Decoder(user_id)
 
+	def login(): # TODO: close on ^C (somehow)
+		global vk_sid
+		eh, ew = 6, 48
+		ey, ex = (h-eh)//2, (w-ew)//2
+		ep = curses.newwin(eh, ew, ey, ex)
+		ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
+		for i in range(1, eh-1): ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
+		ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
+		ep.addstr(1, 2, 'Authorization'.center(ew-4))
+		ep.addstr(2, 2, 'VK Login:')
+		ep.addstr(3, 2, 'Password:')
+		ep.refresh()
+		login, password = Textbox(stdscr.subpad(1, ew-13, ey+2, ex+12)), Textbox(stdscr.subpad(1, ew-13, ey+3, ex+12))
+		login.edit(); password.edit()
+		log(*map(str.strip, (login.gather(), password.gather())))
+		vk_sid = loginforsid(*map(str.strip, (login.gather(), password.gather())))
 	def loadDialogs():
 		nonlocal ll
 		if (ll <= 1): stdscr.addstr(0, 0, 'Loading'.center(stdscr.getmaxyx()[1]), curses.A_STANDOUT); stdscr.refresh()
+		if (len(l) < 2): l.insert(-1, {'name': '* My Audios', 'id': -1})
 		r = dialogs(offset=len(l)-1, extended=1)
 		for i in r['items']:
 			if (i['conversation']['peer']['type'] == 'user'): u = S(r['profiles'])['id', i['conversation']['peer']['id']][0]; l.insert(-1, S(u)&{'name': ' '.join(S(u)@['first_name', 'last_name'])})
@@ -32,15 +52,27 @@ def main(stdscr):
 			elif (i['conversation']['peer']['type'] == 'group'): l.insert(-1, S(r['groups'])['id', -i['conversation']['peer']['id']][0])
 		l[-1] = bool(r['items'])
 		ll = len(l)-1
-		#log(1, str(l))
-		#while (True): pass
 	def loadAudios():
 		nonlocal ll
 		if (ll <= 1): stdscr.addstr(0, 0, 'Loading'.center(stdscr.getmaxyx()[1]), curses.A_STANDOUT); stdscr.refresh()
+		if (peer_id == -1): loadOwnAudios(); return
 		r = API.messages.getHistoryAttachments(peer_id=peer_id, media_type='audio', start_from=l[-1])
 		for i in S(r['items'])@['attachment']@['audio']:
 			if (len(l) < 2 or l[-2] != i): l.insert(-1, i)
 		l[-1] = r.get('next_from')
+		ll = len(l)-1
+	def loadOwnAudios(): # TODO: playlists, owners
+		nonlocal ll
+		if (not vk_sid): login()
+		r = json.loads(requests.post(f"https://vk.com/al_audio.php?act=load_section&owner_id={user_id}&type=playlist&playlist_id=-1&offset={l[-1]}&al=1", cookies={'remixsid': vk_sid}).text.split('<!>')[-4][7:])
+		for i in r['list']: l.insert(-1, {
+			'title': html.unescape(i[3]),
+			'artist': html.unescape(i[4]),
+			'duration': i[5],
+			'is_hq': False, # TODO ???
+			'url': url_decoder.decode(i[2]),
+		})
+		l[-1] = str(r.get('nextOffset')) if (r['hasMore']) else None
 		ll = len(l)-1
 	def selectDialog():
 		nonlocal n, mode, peer_id
@@ -58,15 +90,15 @@ def main(stdscr):
 		try: p.set_mrl(l[n]['url']); p.play()
 		except: track = 'Error'
 	def strfTime(t): return time.strftime('%H:%M:%S', time.gmtime(t)).lstrip('0').lstrip(':')
-	def debugOut(s): s = str(s); stdscr.addstr(0, (stdscr.getmaxyx()[1]-len(s))//2-1, s, curses.A_STANDOUT)
+	def debugOut(*s, sep=' '): s = sep.join(map(str, s)); stdscr.addstr(0, (stdscr.getmaxyx()[1]-len(s))//2-1, s, curses.A_STANDOUT)
 
 	n, t, ll, ln, mode = (int(),)*5
 	cl, cs, cu, lmode = (-1,)*4
 	track = str()
 	l = list()
 
-	while (True):
-		try:
+	try:
+		while (True):
 			h, w = stdscr.getmaxyx(); h -= 2
 			if (mode >= 0): stdscr.erase()
 			if (mode == -2): break
@@ -94,18 +126,17 @@ def main(stdscr):
 					title = '%s %s' % (title[0], title[1].rjust(w-len(title[0])-1))
 					stdscr.addstr(i-t, 0, title, curses.A_STANDOUT*(i==n) | curses.A_BOLD*(i==cs and peer_id==cu))
 			pl = p.get_length() if (p.get_length() != -1) else 0
-			pp = p.get_position() if (p.get_position() != -1) else 0
-			pgrstr = '%s/%s │%%s│ %s' % (strfTime(pl*pp/1000), strfTime(pl/1000), time.strftime('%X'))
+			pp = min(1, p.get_position()) if (p.get_position() != -1) else 0
+			pgrstr = f"{strfTime(pl*pp/1000)}/{strfTime(pl/1000)} │%s│ {time.strftime('%X')}"
 			pgrlen = w-len(pgrstr)
 			#debugOut((pgrstr+' ') % '%s: %s' % (n, int(pp*pgrlen+1*bool(pp))))
-			try: assert (peer_id == cu and cs != -1); track = ('%s — %s' % (l[cs]['artist'], l[cs]['title']))
-			except: pass
+			if (mode == 1 and peer_id == cu and cs != -1): track = '%(artist)s — %(title)s' % l[cs]
 			stdscr.addstr(h, 1, S(track).fit(w-2).ljust(w-2), curses.A_UNDERLINE)
-			stdscr.addstr(h+1, 1, pgrstr % ('█'*int(pp*pgrlen+1*bool(pp))+'░'*(pgrlen-int(pp*pgrlen+bool(pp)))))
+			ps = min(pgrlen, int(pp*pgrlen+p.is_playing()))
+			stdscr.addstr(h+1, 1, pgrstr % ('█'*ps+'░'*(pgrlen-ps)))
 			stdscr.addstr(h+1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not p.is_playing()))
-			if (pp > 0.99 and not p.is_playing()):
+			if (p.get_state() == vlc.State.Ended):
 				n = (cs+1) % len(l)
-				while (n >= t+h): t = min(t+1, ll-h+1)
 				playTrack()
 
 			c = stdscr.getch()
@@ -151,15 +182,13 @@ def main(stdscr):
 				cs = -1
 
 			stdscr.refresh()
-		except Exception as ex: pass
-		except KeyboardInterrupt as ex: retex = ex; break
-	p.stop()
-	return retex
+	except KeyboardInterrupt as ex: return ex
+	finally: p.stop()
 
 if (__name__ == '__main__'):
 	logstarted()
 	db.load()
-	#tokens.access_token
-	#locklog()
 	exit(curses.wrapper(main))
 else: logimported()
+
+# by Sdore, 2019
