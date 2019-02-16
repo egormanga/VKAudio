@@ -6,10 +6,8 @@ from api import *
 from curses.textpad import Textbox
 from utils import *; logstart('VKAudio')
 
-vk_sid = str()
 db.setfile(os.path.realpath(os.path.dirname(sys.argv[0])+'/VKAudio.db'))
 db.setbackup(False)
-db.register('vk_sid')
 tokens.require('access_token', 'messages,offline')
 
 def main(stdscr):
@@ -39,8 +37,7 @@ def main(stdscr):
 		ep.refresh()
 		login, password = Textbox(stdscr.subpad(1, ew-13, ey+2, ex+12)), Textbox(stdscr.subpad(1, ew-13, ey+3, ex+12))
 		login.edit(); password.edit()
-		log(*map(str.strip, (login.gather(), password.gather())))
-		vk_sid = loginforsid(*map(str.strip, (login.gather(), password.gather())))
+		al_login(*map(str.strip, (login.gather(), password.gather())))
 	def loadDialogs():
 		nonlocal ll
 		if (ll <= 1): stdscr.addstr(0, 0, 'Loading'.center(stdscr.getmaxyx()[1]), curses.A_STANDOUT); stdscr.refresh()
@@ -63,8 +60,8 @@ def main(stdscr):
 		ll = len(l)-1
 	def loadOwnAudios(): # TODO: playlists, owners
 		nonlocal ll
-		if (not vk_sid): login()
-		r = json.loads(requests.post(f"https://vk.com/al_audio.php?act=load_section&owner_id={user_id}&type=playlist&playlist_id=-1&offset={l[-1]}&al=1", cookies={'remixsid': vk_sid}).text.split('<!>')[-4][7:])
+		if (not getvksid()): login()
+		r = API.audio.get(owner_id=user_id, offset=l[-1])
 		for i in r['list']: l.insert(-1, {
 			'title': html.unescape(i[3]),
 			'artist': html.unescape(i[4]),
