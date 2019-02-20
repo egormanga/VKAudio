@@ -86,12 +86,21 @@ def main(stdscr):
 		stdscr.addstr(h, 1, 'Loading...')
 		try: p.set_mrl(l[n]['url']); p.play()
 		except: track = 'Error'
+	def playNextTrack(force_next=False):
+		nonlocal l, n, cs, repeat, play_next
+		if (not repeat or force_next):
+			if (play_next): n = play_next.pop(0)
+			else: n = (cs+1) % len(l)
+		playTrack()
+
 	def strfTime(t): return time.strftime('%H:%M:%S', time.gmtime(t)).lstrip('0').lstrip(':')
 	def debugOut(*s, sep=' '): s = sep.join(map(str, s)); stdscr.addstr(0, (stdscr.getmaxyx()[1]-len(s))//2-1, s, curses.A_STANDOUT)
 
 	n, t, ll, ln, mode = (int(),)*5
 	cl, cs, cu, lmode = (-1,)*4
 	track = str()
+	repeat = bool()
+	play_next = list()
 	l = list()
 
 	try:
@@ -117,21 +126,19 @@ def main(stdscr):
 				for i in range(t, min(t+h, len(l))):
 					if (type(l[i]) == str): stdscr.addstr(i-t, 0, 'Load more...', curses.A_STANDOUT*(i==n)); continue
 					elif (not l[i]): stdscr.addstr(i-t, 0, 'End.', curses.A_STANDOUT*(i==n)); ll = len(l)-2; continue
-					title = ['%s — %s' % (l[i]['artist'], l[i]['title'])]
-					title.append('HQ '*l[i]['is_hq']+strfTime(l[i]['duration']))
-					title[0] = S(title[0]).fit(w-len(title[1])-2)
+					title = '%s — %s' % (l[i]['artist'], l[i]['title'])
+					title_attrs = ' '.join((str(play_next.index(i)+1) if (i in play_next) else '', 'HQ'*l[i]['is_hq'], strfTime(l[i]['duration'])))
+					title = (S(title).fit(w-len(title_attrs)-2), title_attrs)
 					title = '%s %s' % (title[0], title[1].rjust(w-len(title[0])-1))
 					stdscr.addstr(i-t, 0, title, curses.A_STANDOUT*(i==n) | curses.A_BOLD*(i==cs and peer_id==cu))
 			pl = p.get_length() if (p.get_length() != -1) else 0
 			pp = min(1, p.get_position()) if (p.get_position() != -1) else 0
-			pgrstr = f"{strfTime(pl*pp/1000)}/{strfTime(pl/1000)} │%s│ {time.strftime('%X')}"
+			pgrstr = f"{strfTime(pl*pp/1000)}/{strfTime(pl/1000)} %s {time.strftime('%X')}"
 			if (mode == 1 and peer_id == cu and cs != -1): track = '%(artist)s — %(title)s' % l[cs]
-			stdscr.addstr(h, 1, S(track).fit(w-2).ljust(w-2), curses.A_UNDERLINE)
+			stdscr.addstr(h, 1, S(track).fit(w-2-repeat*2).ljust(w-3)+' ↺'[repeat], curses.A_UNDERLINE)
 			stdscr.addstr(h+1, 1, pgrstr % Progress.format_bar(pp*pl, pl or 1, w-len(pgrstr)))
 			stdscr.addstr(h+1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not p.is_playing()))
-			if (p.get_state() == vlc.State.Ended):
-				n = (cs+1) % len(l)
-				playTrack()
+			if (p.get_state() == vlc.State.Ended): playNextTrack()
 
 			c = stdscr.getch()
 			if (c != -1): cl = c
@@ -168,12 +175,14 @@ def main(stdscr):
 				elif (mode == 1): playTrack()
 			elif (c == ord('q') or c == ord('\033') or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): mode -= 1
 			elif (c == ord('a')):
-				n = (cs+1) % len(l)
-				while (n >= t+h): t = min(t+1, ll-h+1)
-				playTrack()
+				playNextTrack(force_next=True)
 			elif (c == ord('s')):
 				p.stop()
 				cs = -1
+			elif (c == ord('r')):
+				repeat = not repeat
+			elif (c == ord('n')):
+				play_next.append(n)
 
 			stdscr.refresh()
 	except KeyboardInterrupt as ex: return ex
