@@ -125,12 +125,9 @@ def main(stdscr):
 			pl = p.get_length() if (p.get_length() != -1) else 0
 			pp = min(1, p.get_position()) if (p.get_position() != -1) else 0
 			pgrstr = f"{strfTime(pl*pp/1000)}/{strfTime(pl/1000)} │%s│ {time.strftime('%X')}"
-			pgrlen = w-len(pgrstr)
-			#debugOut((pgrstr+' ') % '%s: %s' % (n, int(pp*pgrlen+1*bool(pp))))
 			if (mode == 1 and peer_id == cu and cs != -1): track = '%(artist)s — %(title)s' % l[cs]
 			stdscr.addstr(h, 1, S(track).fit(w-2).ljust(w-2), curses.A_UNDERLINE)
-			ps = min(pgrlen, int(pp*pgrlen+p.is_playing()))
-			stdscr.addstr(h+1, 1, pgrstr % ('█'*ps+'░'*(pgrlen-ps)))
+			stdscr.addstr(h+1, 1, pgrstr % Progress.format_bar(pp*pl, pl or 1, w-len(pgrstr)))
 			stdscr.addstr(h+1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not p.is_playing()))
 			if (p.get_state() == vlc.State.Ended):
 				n = (cs+1) % len(l)
