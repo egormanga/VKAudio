@@ -6,21 +6,21 @@ from api import *
 from curses.textpad import Textbox
 from utils import *; logstart('VKAudio')
 
-db.setfile(os.path.realpath(os.path.dirname(sys.argv[0])+'/VKAudio.db'))
+db.setfile(os.path.dirname(os.path.realpath(sys.argv[0]))+'/VKAudio.db')
 db.setbackup(False)
 tokens.require('access_token', 'messages,offline')
 
-def main(stdscr):
+def main(stdscr, user_id):
 	curses.curs_set(False)
 	curses.use_default_colors()
 	stdscr.nodelay(True)
+	curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+	curses.mouseinterval(0)
 
 	p = vlc.MediaPlayer()
 	p.get_instance().log_unset()
 	p.audio_set_volume(100)
 
-	user_id = user()[0]['id']
-	peer_id = int()
 	url_decoder = vaud.Decoder(user_id)
 
 	def login(): # TODO: close on ^C (somehow)
@@ -71,6 +71,27 @@ def main(stdscr):
 		})
 		l[-1] = str(r.get('nextOffset')) if (r['hasMore']) else None
 		ll = len(l)-1
+
+	def scrollToTop():
+		nonlocal n, t
+		n = t = 0
+	def scrollToSelected(): # TODO: O(1)
+		nonlocal n, t
+		while (t > n): t = max(t-1, 0)
+		while (t+h <= n): t = min(t+1, ll-h+1)
+	def selectItem():
+		nonlocal mode
+		if (mode == -1): mode = 0
+		elif (mode == 0): selectDialog()
+		elif (mode == 1): playTrack()
+		if (lmode != mode): scrollToTop()
+	def goBack():
+		nonlocal mode
+		mode -= 1
+		scrollToTop()
+	def toggleRepeat():
+		nonlocal repeat
+		repeat = not repeat
 	def selectDialog():
 		nonlocal n, mode, peer_id
 		if (n > ll): n -= 1; return
@@ -92,16 +113,19 @@ def main(stdscr):
 			if (play_next): n = play_next.pop(0)
 			else: n = (cs+1) % len(l)
 		playTrack()
+		scrollToSelected()
 
 	def strfTime(t): return time.strftime('%H:%M:%S', time.gmtime(t)).lstrip('0').lstrip(':')
 	def debugOut(*s, sep=' '): s = sep.join(map(str, s)); stdscr.addstr(0, (stdscr.getmaxyx()[1]-len(s))//2-1, s, curses.A_STANDOUT)
 
 	n, t, ll, ln, mode = (int(),)*5
 	cl, cs, cu, lmode = (-1,)*4
+	l = list()
+	peer_id = int()
 	track = str()
 	repeat = bool()
 	play_next = list()
-	l = list()
+	clicked = bool()
 
 	try:
 		while (True):
@@ -114,7 +138,7 @@ def main(stdscr):
 				ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
 				for i in range(1, eh-1): ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
 				ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
-				for ii, i in enumerate('Are you sure you\nwant to exit?\nPress the key again\nto exit or Enter\nto stay.'.split('\n')): ep.addstr(1+ii, 2, i.center(ew-3), curses.A_BOLD)
+				for ii, i in enumerate('Are you sure you\nwant to exit?\nPress the key again\nto exit or select\nto stay.'.split('\n')): ep.addstr(1+ii, 2, i.center(ew-3), curses.A_BOLD)
 			elif (mode == 0):
 				if (lmode != mode): l = [True]; loadDialogs(); n = ln; lmode = mode
 				for i in range(t, min(t+h, len(l))):
@@ -128,15 +152,13 @@ def main(stdscr):
 					elif (not l[i]): stdscr.addstr(i-t, 0, 'End.', curses.A_STANDOUT*(i==n)); ll = len(l)-2; continue
 					title = '%s — %s' % (l[i]['artist'], l[i]['title'])
 					title_attrs = ' '.join((str(play_next.index(i)+1) if (i in play_next) else '', 'HQ'*l[i]['is_hq'], strfTime(l[i]['duration'])))
-					title = (S(title).fit(w-len(title_attrs)-2), title_attrs)
-					title = '%s %s' % (title[0], title[1].rjust(w-len(title[0])-1))
-					stdscr.addstr(i-t, 0, title, curses.A_STANDOUT*(i==n) | curses.A_BOLD*(i==cs and peer_id==cu))
-			pl = p.get_length() if (p.get_length() != -1) else 0
-			pp = min(1, p.get_position()) if (p.get_position() != -1) else 0
+					stdscr.addstr(i-t, 0, S(title).fit(w-len(title_attrs)-2)+' '+title_attrs.rjust(w-len(title)-1), curses.A_STANDOUT*(i==n) | curses.A_BOLD*(i==cs and peer_id==cu))
+			pl = max(0, p.get_length())
+			pp = min(1, p.get_position())
 			pgrstr = f"{strfTime(pl*pp/1000)}/{strfTime(pl/1000)} %s {time.strftime('%X')}"
 			if (mode == 1 and peer_id == cu and cs != -1): track = '%(artist)s — %(title)s' % l[cs]
 			stdscr.addstr(h, 1, S(track).fit(w-2-repeat*2).ljust(w-3)+' ↺'[repeat], curses.A_UNDERLINE)
-			stdscr.addstr(h+1, 1, pgrstr % Progress.format_bar(pp*pl, pl or 1, w-len(pgrstr)))
+			stdscr.addstr(h+1, 1, pgrstr % Progress.format_bar(pp, 1, w-len(pgrstr)))
 			stdscr.addstr(h+1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not p.is_playing()))
 			if (p.get_state() == vlc.State.Ended): playNextTrack()
 
@@ -145,53 +167,73 @@ def main(stdscr):
 			if (c == 1): pass
 			elif (c == curses.KEY_UP):
 				n = max(n-1, 0)
-				while (n < t): t = max(t-1, 0)
+				scrollToSelected()
 			elif (c == curses.KEY_DOWN):
 				n = min(n+1, ll)
-				while (n >= t+h): t = min(t+1, ll-h+1)
+				scrollToSelected()
 			elif (c == curses.KEY_PPAGE):
 				n = max(n-h, 0)
-				while (n < t): t = max(t-1, 0)
+				scrollToSelected()
 			elif (c == curses.KEY_NPAGE):
 				n = min(n+h, ll)
-				while (n >= t+h): t = min(t+1, ll-h+1)
+				scrollToSelected()
 			elif (c == curses.KEY_HOME):
 				n = 0
-				while (n < t): t = max(t-1, 0)
+				scrollToSelected()
 			elif (c == curses.KEY_END):
 				n = ll
-				while (n >= t+h): t = min(t+1, ll-h+1)
+				scrollToSelected()
 			elif (c == curses.KEY_LEFT):
 				if (mode == 1): p.set_position(p.get_position()-0.01)
 			elif (c == curses.KEY_RIGHT):
 				if (mode == 1): p.set_position(p.get_position()+0.01)
 			elif (c in range(ord('0'), ord('9')+1)):
-				if (mode == 1): p.set_position(0.1*('1234567890'.index(chr(c))))
+				if (p.is_playing()): p.set_position(0.1*('1234567890'.index(chr(c))))
 			elif (c == ord(' ') or c == ord('p')):
 				if (mode == 1): p.pause()
 			elif (c == ord('\n')):
-				if (mode == -1): mode = 0
-				elif (mode == 0): selectDialog()
-				elif (mode == 1): playTrack()
-			elif (c == ord('q') or c == ord('\033') or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): mode -= 1
+				selectItem()
+			elif (c == ord('q') or c == ord('\033') or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): goBack()
 			elif (c == ord('a')):
 				playNextTrack(force_next=True)
 			elif (c == ord('s')):
 				p.stop()
 				cs = -1
 			elif (c == ord('r')):
-				repeat = not repeat
+				toggleRepeat()
 			elif (c == ord('n')):
 				play_next.append(n)
+			elif (c == curses.KEY_MOUSE):
+				try: id, x, y, z, bstate = curses.getmouse()
+				except curses.error: id = x = y = z = bstate = 0
+				if (bstate == curses.BUTTON4_PRESSED): t = max(t-3, 0)
+				elif (bstate == curses.REPORT_MOUSE_POSITION and ll > h): t = min(t+3, ll-h+1)
+				else:
+					if (y < h):
+						if (bstate == curses.BUTTON1_PRESSED):
+							if (mode < 0): selectItem()
+							else:
+								n = t+y
+								if (time.time() < clicked): selectItem(); clicked = True
+						elif (bstate == curses.BUTTON1_RELEASED): clicked = False if (clicked == True) else time.time()+0.2
+						elif (bstate == curses.BUTTON3_PRESSED): goBack()
+					elif (y == h+1 and 14 <= x <= w-12):
+						if (bstate == curses.BUTTON1_PRESSED or bstate == curses.REPORT_MOUSE_POSITION):
+							if (p.is_playing()): p.set_position((x-14)/(w-12-14+1))
+					elif (y == h and x >= w-2):
+						if (bstate == curses.BUTTON1_PRESSED):
+							toggleRepeat()
 
 			stdscr.refresh()
-	except KeyboardInterrupt as ex: return ex
+	except KeyboardInterrupt as ex: return
 	finally: p.stop()
 
 if (__name__ == '__main__'):
 	logstarted()
 	db.load()
-	exit(curses.wrapper(main))
+	user()
+	#if ('xterm' in os.environ['TERM']): os.environ['TERM'] = 'xterm-1002' # mouse movement
+	exit(curses.wrapper(main, user()[0]['id']))
 else: logimported()
 
 # by Sdore, 2019
