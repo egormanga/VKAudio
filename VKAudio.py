@@ -233,7 +233,23 @@ class ProgressView(SCView):
 		stdscr.addstr(1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not self.app.p.is_playing()))
 		if (self.app.p.get_state() == vlc.State.Ended): self.app.playNextTrack()
 
-class LoginView(SCView): # TODO: hide password chars
+class LoginView(SCView):
+	class PasswordBox(curses.textpad.Textbox):
+		def __init__(self, *args, **kwargs):
+			super().__init__(*args, **kwargs)
+			self.result = str()
+
+		def do_command(self, ch):
+			if (ch in (curses.ascii.BS, curses.KEY_BACKSPACE)): self.result = self.result[:-1]
+			return super().do_command(ch)
+
+		def _insert_printable_char(self, ch):
+			self.result += chr(ch)
+			return super()._insert_printable_char('*')
+
+		def gather(self):
+			return self.result
+
 	def draw(self, stdscr):
 		self.h, self.w = stdscr.getmaxyx()
 		eh, ew = 6, 48
@@ -247,9 +263,23 @@ class LoginView(SCView): # TODO: hide password chars
 		ep.addstr(3, 2, 'Password:')
 		ep.refresh()
 		y, x = stdscr.getbegyx()
-		login, password = curses.textpad.Textbox(curses.newwin(y+1, x+ew-13, ey+2, ex+12)), curses.textpad.Textbox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
+		login, password = curses.textpad.Textbox(curses.newwin(y+1, x+ew-13, ey+2, ex+12)), self.PasswordBox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
 		al_login(*map(str.strip, (login.edit(), password.edit())))
 		self.app.w.views.pop()
+
+class HelpView(SCView):
+	def draw(self, stdscr):
+		self.h, self.w = stdscr.getmaxyx()
+		eh, ew = 16, 40
+		ep = stdscr.subpad(eh, ew, (self.h-eh)//2, (self.w-ew)//2)
+		ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
+		for i in range(1, eh-1): ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
+		ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
+		for ii, i in enumerate('TODO:\n\nWrite help.'.split('\n')): ep.addstr(ii+1, 2, i)
+
+	def key(self, c):
+		self.app.w.views.pop()
+		return True
 
 class QuitView(SCView):
 	def draw(self, stdscr):
@@ -365,6 +395,10 @@ app = App()
 def back(self, c):
 	if (len(self.w.views) == 1): self.w.addView(QuitView()); return
 	self.w.views.pop()
+
+@app.onkey('h')
+def help(self, c):
+	self.w.addView(HelpView())
 
 @app.onkey(curses.KEY_LEFT)
 def rew(self, c):
