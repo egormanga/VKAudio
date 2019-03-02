@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # VK Audio Player
 
-import vlc, html, vaud, struct
+import vlc, html, struct
 from api import *
 from Scurses import *
 from utils import *; logstart('VKAudio')
@@ -9,27 +9,6 @@ from utils import *; logstart('VKAudio')
 db.setfile('VKAudio.db')
 db.setbackup(False)
 tokens.require('access_token', 'offline')
-
-class Mouse:
-	curses_map = {
-		1: curses.BUTTON1_PRESSED,
-		4: curses.BUTTON2_PRESSED,
-		2: curses.BUTTON3_PRESSED,
-	}
-
-	def __init__(self, h, w):
-		self.h, self.w = h, w
-		self.fd = open('/dev/input/mice', 'rb')
-		self.x = int()
-		self.y = int()
-	def getmouse(self):
-		b, dx, mdy = struct.unpack('Bbb', select.select((self.fd,), (), (), 0)[0][0].read(3))
-		self.x = Sint(self.x+dx).constrain(0, self.w-1)
-		self.y = Sint(self.y-mdy/2).constrain(0, self.h-1)
-		bstate = 0
-		for i in self.curses_map:
-			if (b & i): bstate |= self.curses_map[i]
-		return (0, round(self.x), round(self.y), 0, bstate)
 
 class VKAudioView(SCVSplitView):
 	def __init__(self):
@@ -165,7 +144,7 @@ class AudiosView(SCSelectingListView):
 		if (self.toLoad):
 			self.load()
 			self.toLoad = False
-			if (self.peer_id == self.app.pl_peer): self.app.selectPlayingTrack()
+			self.app.selectPlayingTrack()
 
 	def key(self, c):
 		if (c == curses.KEY_DOWN):
@@ -180,7 +159,7 @@ class AudiosView(SCSelectingListView):
 		elif (c == 'n'):
 			t = self.l[self.n]
 			for ii, i in enumerate(self.app.play_next):
-				if (isinstance(i, dict) and i['url'] == t['url']): del self.app.play_next[ii]; return
+				if (isinstance(i, dict) and al_audio_eq(i, t)): del self.app.play_next[ii]; return
 			else: self.app.playNext(t)
 		elif (c == 'b'):
 			self.app.selectPlayingTrack()
@@ -193,7 +172,7 @@ class AudiosView(SCSelectingListView):
 		elif (isinstance(self.l[i], int)): text = 'Loading...' if (self.loading) else 'Load more...'
 		else:
 			for jj, j in enumerate(self.app.play_next):
-				if (j['url'] == self.l[i]['url']): pn_pos = str(jj+1); break
+				if (al_audio_eq(j, self.l[i])): pn_pos = str(jj+1); break
 			else: pn_pos = ''
 			t_attrs = (pn_pos+' ' if (pn_pos) else '')+('HQ ' if (self.l[i]['is_hq']) else '')+self.app.strfTime(self.l[i]['duration'])
 			text = S(f"{self.l[i]['artist']} — {self.l[i]['title']}").fit(self.w-len(t_attrs)-2)
@@ -209,7 +188,7 @@ class AudiosView(SCSelectingListView):
 	def load(self):
 		if (self.l[-1] is False): self.l[-1] = None; return
 
-		if (not self.im): # TODO: playlists, FIXME missing urls
+		if (not self.im): # TODO: playlists
 			if (not getvksid()): self.app.w.addView(LoginView()); return
 			r = API.audio.get(owner_id=self.peer_id, offset=self.l.pop())
 			l = r['list']
@@ -218,7 +197,6 @@ class AudiosView(SCSelectingListView):
 			l = S(r['items'])@['attachment']@['audio']
 		for i in l:
 			if (self.l and self.l[-1] == i): continue
-			i['url'] = self.app.url_decoder.decode(i['url'])
 			self.l.append(i)
 		self.l.append((r['has_more'] and r['next_from']) if (l) else None)
 
@@ -275,7 +253,7 @@ class HelpView(SCView):
 		ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
 		for i in range(1, eh-1): ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
 		ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
-		for ii, i in enumerate('TODO:\n\nWrite help.'.split('\n')): ep.addstr(ii+1, 2, i)
+		for ii, i in enumerate('TODO:\n\nWrite help.'.split('\n')): ep.addstr(ii+1, 2, i) # TODO
 
 	def key(self, c):
 		self.app.w.views.pop()
@@ -301,21 +279,17 @@ class App(SCApp):
 	def init(self):
 		super().init()
 		curses.use_default_colors()
+		curses.curs_set(False)
 		curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
 		curses.mouseinterval(0)
 		self.stdscr.nodelay(True)
-
-		if (os.environ['TERM'] == 'linux'): self.mouse = None#Mouse(*stdscr.getmaxyx())
-		else: self.mouse = None
-		curses.curs_set(2*bool(self.mouse))
-		self.stdscr.leaveok(not self.mouse)
+		self.stdscr.leaveok(True)
 
 		self.p = vlc.MediaPlayer()
 		self.p.get_instance().log_unset()
 		self.p.audio_set_volume(100)
 
 		self.user_id = user()[0]['id']
-		self.url_decoder = vaud.Decoder(self.user_id)
 
 		self.playlist = list()
 		self.pl_pos = -1
@@ -336,12 +310,12 @@ class App(SCApp):
 		self.error = False
 		self.p.stop()
 		try:
-			assert t['url']
+			al_audio_get_url(self.user_id, t) # in-place
 			self.p.set_mrl(t['url'])
 			self.p.play()
 		except Exception: self.error = True; return False
 		self.track = t
-		if (isinstance(self.w.views[-1], AudiosView)): self.selectPlayingTrack()
+		self.selectPlayingTrack()
 		return True
 
 	def playNextTrack(self, force_next=False):
@@ -361,8 +335,9 @@ class App(SCApp):
 		self.playTrack()
 
 	def selectPlayingTrack(self):
+		if (not isinstance(self.w.views[-1], AudiosView) or self.w.views[-1].peer_id != self.pl_peer): return
 		for ii, i in enumerate(self.w.views[-1].l):
-			if (isinstance(i, dict) and i['url'] == self.track.get('url')): self.w.views[-1].selectAndScroll(ii); break
+			if (isinstance(i, dict) and al_audio_eq(i, self.track)): self.w.views[-1].selectAndScroll(ii); break
 
 	def stop(self):
 		self.p.stop()
@@ -377,7 +352,7 @@ class App(SCApp):
 	def playNext(self, t):
 		self.play_next.append(t)
 		for ii, i in enumerate(self.playlist):
-			if (isinstance(i, dict) and i['url'] == t['url']): self.pl_pos = ii; break
+			if (isinstance(i, dict) and al_audio_eq(i, t)): self.pl_pos = ii; break
 
 	def toggleRepeat(self):
 		self.repeat = not self.repeat
