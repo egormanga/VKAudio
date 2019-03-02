@@ -8,7 +8,7 @@ from utils import *; logstart('VKAudio')
 
 db.setfile('VKAudio.db')
 db.setbackup(False)
-tokens.require('access_token', 'messages,offline')
+tokens.require('access_token', 'offline')
 
 class Mouse:
 	curses_map = {
@@ -31,124 +31,196 @@ class Mouse:
 			if (b & i): bstate |= self.curses_map[i]
 		return (0, round(self.x), round(self.y), 0, bstate)
 
+class VKAudioView(SCVSplitView):
+	def __init__(self):
+		super().__init__(-2)
+
+	def init(self):
+		super().init()
+		self.p[0].addView(DialogsView())
+		self.p[1].addView(ProgressView())
+
 class DialogsView(SCSelectingListView):
 	def __init__(self):
-		super().__init__(list())
+		super().__init__([{'name': '* My Audios', 'id': -1}, {'name': '* My Friends', 'id': -2}])
 		self.toLoad = bool()
+		self.loading = bool()
 
 	def draw(self, stdscr):
 		super().draw(stdscr)
-		if (not self.l):
-			stdscr.addstr(0, 0, 'Loading'.center(self.w), curses.A_STANDOUT)
-			self.l.append({'name': '* My Audios', 'id': -1})
+		if (self.loading): self.loading = False; return
+		if (isinstance(self.l[-1], dict) and not self.toLoad):
+			stdscr.addstr(0, 0, 'Loading'.center(self.w), curses.A_STANDOUT) # FIXME not visible
 			self.toLoad = True
+			return
 		if (self.toLoad):
 			self.load()
 			self.toLoad = False
 
 	def key(self, c):
 		if (c == curses.KEY_DOWN):
-			self.n = min(self.n+1, len(self.l)-1-(not self.l[-1]))
+			self.n = min(self.n+1, len(self.l)-1-(self.l[-1] is None))
 			self.scrollToSelected()
 		elif (c == curses.KEY_NPAGE):
-			self.n = min(self.n+self.h, len(self.l)-1-(not self.l[-1]))
+			self.n = min(self.n+self.h, len(self.l)-1-(self.l[-1] is None))
 			self.scrollToSelected()
 		elif (c == curses.KEY_END):
-			self.n = len(self.l)-1-(not self.l[-1])
+			self.n = len(self.l)-1-(self.l[-1] is None)
 			self.scrollToSelected()
 		else: return super().key(c)
 		return True
 
 	def item(self, i):
 		text, attrs = super().item(i)
-		if (self.l[i] == True): text = 'Load more...'
-		elif (self.l[i] == False): text = 'End.'
+		if (self.l[i] is None): text = 'End.'
+		elif (isinstance(self.l[i], int)): text = 'Loading...' if (self.loading) else 'Load more...'
 		else: text = S(self.l[i]['name']).fit(self.w)
 		return (text, attrs)
 
 	def select(self):
-		if (self.l[self.n] == False): self.n -= 1; return
-		elif (self.l[self.n] == True): self.load(); return
-		else: self.app.w.addView(AudiosView(self.l[self.n]['id']))
+		if (self.l[self.n] is None): self.n -= 1; return
+		elif (isinstance(self.l[self.n], int)): self.loading = True; self.toLoad = True; return
+		elif (self.l[self.n]['id'] == -1): self.app.w.addView(AudiosView(self.app.user_id))
+		elif (self.l[self.n]['id'] == -2): self.app.w.addView(FriendsView())
+		else: self.app.w.addView(AudiosView(self.l[self.n]['id'], im=True))
 
 	def load(self):
-		r = dialogs(count=self.h-1, offset=len(self.l), extended=1)
-		if (len(self.l) > 1): self.l.pop()
+		if (self.l[-1] is False): self.l[-1] = None; return
+		if (not getvksid()): self.app.w.addView(LoginView()); return
+		r = dialogs(count=self.h-1, start_message_id=self.l[-1] if (isinstance(self.l[-1], int)) else 0, extended=True, parse_attachments=False)
+		if (len(self.l) > 2): self.l.pop()
 		for i in r['items']:
-			if (i['conversation']['peer']['type'] == 'user'): u = S(r['profiles'])['id', i['conversation']['peer']['id']][0]; self.l.append(S(u)&{'name': ' '.join(S(u)@['first_name', 'last_name'])})
-			elif (i['conversation']['peer']['type'] == 'chat'): self.l.append({'name': i['conversation']['chat_settings']['title'], 'id': i['conversation']['peer']['id']})
-			elif (i['conversation']['peer']['type'] == 'group'): self.l.append(S(r['groups'])['id', -i['conversation']['peer']['id']][0])
-		self.l.append(bool(r['items']))
+			try:
+				if (i['conversation']['peer']['type'] == 'user'): u = S(r['profiles'])['id', i['conversation']['peer']['id']][0]; self.l.append(S(u)&{'name': ' '.join(S(u)@['first_name', 'last_name'])})
+				elif (i['conversation']['peer']['type'] == 'chat'): self.l.append({'name': i['conversation']['chat_settings']['title'], 'id': i['conversation']['peer']['id']})
+				elif (i['conversation']['peer']['type'] == 'group'): self.l.append(S(r['groups'])['id', -i['conversation']['peer']['id']][0])
+			except IndexError: pass
+		self.l.append(r['has_more'] and i['conversation']['last_message_id'])
 
-class AudiosView(SCSelectingListView):
-	def __init__(self, peer_id):
-		super().__init__([int()])
-		self.peer_id = peer_id
+class FriendsView(SCSelectingListView):
+	def __init__(self):
+		super().__init__([])
 		self.toLoad = bool()
+		self.loading = bool()
 
 	def draw(self, stdscr):
 		super().draw(stdscr)
-		if (len(self.l) <= 1):
+		if (self.loading): self.loading = False; return
+		if (not self.l and not self.toLoad):
 			stdscr.addstr(0, 0, 'Loading'.center(self.w), curses.A_STANDOUT)
 			self.toLoad = True
+			return
 		if (self.toLoad):
 			self.load()
 			self.toLoad = False
 
 	def key(self, c):
 		if (c == curses.KEY_DOWN):
-			self.n = min(self.n+1, len(self.l)-1-(not self.l[-1]))
+			self.n = min(self.n+1, len(self.l)-1-(self.l[-1] is None))
 			self.scrollToSelected()
 		elif (c == curses.KEY_NPAGE):
-			self.n = min(self.n+self.h, len(self.l)-1-(not self.l[-1]))
+			self.n = min(self.n+self.h, len(self.l)-1-(self.l[-1] is None))
 			self.scrollToSelected()
 		elif (c == curses.KEY_END):
-			self.n = len(self.l)-1-(not self.l[-1])
+			self.n = len(self.l)-1-(self.l[-1] is None)
 			self.scrollToSelected()
 		else: return super().key(c)
 		return True
 
 	def item(self, i):
 		text, attrs = super().item(i)
-		if (type(self.l[i]) == str): text = 'Load more...'
-		elif (not self.l[i]): text = 'End.'
-		else:
-			title_attrs = (str(self.app.play_next.index(i)+1)+' ' if (i in self.app.play_next) else '')+'HQ '*self.l[i]['is_hq']+self.app.strfTime(self.l[i]['duration'])
-			title = S(f"{self.l[i]['artist']} — {self.l[i]['title']}").fit(self.w-len(title_attrs)-2)
-			text = title+' '+title_attrs.rjust(self.w-len(title)-2)
+		if (self.l[i] is None): text = 'End.'
+		elif (isinstance(self.l[i], int)): text = 'Loading...' if (self.loading) else 'Load more...'
+		else: text = S(self.l[i]['name']).fit(self.w)
 		return (text, attrs)
 
 	def select(self):
 		if (self.l[self.n] is None): self.n -= 1; return
-		elif (type(self.l[self.n]) == str): self.load(); return
-		self.s = self.n
-		self.app.p.stop()
-		try:
-			assert self.l[self.s]['url']
-			self.app.p.set_mrl(self.l[self.s]['url'])
-			self.app.p.play()
-		except Exception: self.app.track = 'Error'
-		else:
-			self.app.track = '%(artist)s — %(title)s' % self.l[self.s]
-			self.scrollToSelected()
+		elif (isinstance(self.l[self.n], int)): self.loading = True; self.toLoad = True; return
+		else: self.app.w.addView(AudiosView(self.l[self.n]['id']))
 
 	def load(self):
-		if (self.peer_id == -1): # TODO: playlists, owners, FIXME missing urls
+		if (not getvksid()): self.app.w.addView(LoginView()); return
+		r = API.audio.getFriends(exclude=S(',').join(S(self.l[:-1])@['id']))
+		if (len(self.l)): self.l.pop()
+		l = user(r)
+		if (not l or l[0] in self.l): self.l.append(None); return
+		self.l += l+[True]
+
+class AudiosView(SCSelectingListView):
+	def __init__(self, peer_id, im=False):
+		super().__init__([int()])
+		self.peer_id, self.im = peer_id, im
+		self.toLoad = bool()
+		self.loading = bool()
+
+	def draw(self, stdscr):
+		try: super().draw(stdscr) # FIXME crash
+		except curses.error: return
+		if (self.loading): self.loading = False; return
+		if (self.l[0] is 0 and not self.toLoad):
+			stdscr.addstr(0, 0, 'Loading'.center(self.w), curses.A_STANDOUT)
+			self.toLoad = True
+			return
+		if (self.toLoad):
+			self.load()
+			self.toLoad = False
+			if (self.peer_id == self.app.pl_peer): self.app.selectPlayingTrack()
+
+	def key(self, c):
+		if (c == curses.KEY_DOWN):
+			self.n = min(self.n+1, len(self.l)-1-(self.l[-1] is None))
+			self.scrollToSelected()
+		elif (c == curses.KEY_NPAGE):
+			self.n = min(self.n+self.h, len(self.l)-1-(self.l[-1] is None))
+			self.scrollToSelected()
+		elif (c == curses.KEY_END):
+			self.n = len(self.l)-1-(self.l[-1] is None)
+			self.scrollToSelected()
+		elif (c == 'n'):
+			t = self.l[self.n]
+			for ii, i in enumerate(self.app.play_next):
+				if (isinstance(i, dict) and i['url'] == t['url']): del self.app.play_next[ii]; return
+			else: self.app.playNext(t)
+		elif (c == 'b'):
+			self.app.selectPlayingTrack()
+		else: return super().key(c)
+		return True
+
+	def item(self, i):
+		text, attrs = super().item(i)
+		if (self.l[i] is None): text = 'End.'
+		elif (isinstance(self.l[i], int)): text = 'Loading...' if (self.loading) else 'Load more...'
+		else:
+			for jj, j in enumerate(self.app.play_next):
+				if (j['url'] == self.l[i]['url']): pn_pos = str(jj+1); break
+			else: pn_pos = ''
+			t_attrs = (pn_pos+' ' if (pn_pos) else '')+('HQ ' if (self.l[i]['is_hq']) else '')+self.app.strfTime(self.l[i]['duration'])
+			text = S(f"{self.l[i]['artist']} — {self.l[i]['title']}").fit(self.w-len(t_attrs)-2)
+			text += t_attrs.rjust(self.w-len(text))
+		return (text, attrs)
+
+	def select(self):
+		if (self.l[self.n] is None): self.n -= 1; return
+		elif (isinstance(self.l[self.n], int)): self.loading = True; self.toLoad = True; return
+		self.app.setPlaylist(self.l, self.n, self.peer_id)
+		self.app.playTrack()
+
+	def load(self):
+		if (self.l[-1] is False): self.l[-1] = None; return
+
+		if (not self.im): # TODO: playlists, FIXME missing urls
 			if (not getvksid()): self.app.w.addView(LoginView()); return
-			r = API.audio.get(owner_id=self.app.user_id, offset=self.l.pop())
-			for i in r['list']: self.l.append({
-				'title': html.unescape(i[3]),
-				'artist': html.unescape(i[4]),
-				'duration': i[5],
-				'is_hq': False, # TODO ???
-				'url': self.app.url_decoder.decode(i[2]),
-			})#; log(i[2]) # FIXME
-			self.l.append(str(r.get('nextOffset')) if (r['hasMore']) else None)
+			r = API.audio.get(owner_id=self.peer_id, offset=self.l.pop())
+			l = r['list']
 		else:
 			r = API.messages.getHistoryAttachments(peer_id=self.peer_id, media_type='audio', count=self.h, start_from=self.l.pop())
-			for i in S(r['items'])@['attachment']@['audio']:
-				if (len(self.l) < 2 or self.l[-2] != i): self.l.append(i)
-			self.l.append(r.get('next_from'))
+			l = S(r['items'])@['attachment']@['audio']
+		for i in l:
+			if (self.l and self.l[-1] == i): continue
+			i['url'] = self.app.url_decoder.decode(i['url'])
+			self.l.append(i)
+		self.l.append((r['has_more'] and r['next_from']) if (l) else None)
 
 class ProgressView(SCView):
 	def draw(self, stdscr):
@@ -156,7 +228,7 @@ class ProgressView(SCView):
 		pl = max(0, self.app.p.get_length())
 		pp = min(1, self.app.p.get_position())
 		pgrstr = f"{self.app.strfTime(pl*pp/1000)}/{self.app.strfTime(pl/1000)} %s {time.strftime('%X')}"
-		stdscr.addstr(0, 1, S(app.track).fit(self.w-2-self.app.repeat*2).ljust(self.w-3)+' ↺'[self.app.repeat], curses.A_UNDERLINE)
+		stdscr.addstr(0, 1, S(app.trackline).fit(self.w-2-self.app.repeat*2).ljust(self.w-3)+' ↺'[self.app.repeat], curses.A_UNDERLINE)
 		stdscr.addstr(1, 1, pgrstr % Progress.format_bar(pp, 1, self.w-len(pgrstr)))
 		stdscr.addstr(1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not self.app.p.is_playing()))
 		if (self.app.p.get_state() == vlc.State.Ended): self.app.playNextTrack()
@@ -215,29 +287,74 @@ class App(SCApp):
 		self.user_id = user()[0]['id']
 		self.url_decoder = vaud.Decoder(self.user_id)
 
-		self.track = str()
-		self.repeat = bool()
+		self.playlist = list()
+		self.pl_pos = -1
+		self.pl_peer = int()
 		self.play_next = list()
+		self.track = dict()
+		self.error = bool()
+		self.repeat = bool()
 		self.clicked = bool()
 
-		self.views[-1].p[0].addView(DialogsView())
-		self.views[-1].p[1].addView(ProgressView())
 		self.w = self.views[-1].p[0]
 
 	@staticmethod
 	def strfTime(t): return time.strftime('%H:%M:%S', time.gmtime(t)).lstrip('0').lstrip(':')
 
-	def playNextTrack(self, force_next=False):
-		if (self.play_next): self.w.views[-1].n = self.play_next.pop(0)
-		elif (not self.repeat or force_next): self.w.views[-1].n = (self.w.views[-1].s+1) % len(self.w.views[-1].l)
-		self.w.views[-1].select()
+	def playTrack(self, t=None):
+		if (t is None): return self.playTrack(self.playlist[self.pl_pos])
+		self.error = False
+		self.p.stop()
+		try:
+			assert t['url']
+			self.p.set_mrl(t['url'])
+			self.p.play()
+		except Exception: self.error = True; return False
+		self.track = t
+		if (isinstance(self.w.views[-1], AudiosView)): self.selectPlayingTrack()
+		return True
 
-	def playPrevTrack(self, ):
-		self.w.views[-1].n = max(self.w.views[-1].n-1, 0)
-		self.w.views[-1].select()
+	def playNextTrack(self, force_next=False):
+		if (self.repeat and not force_next): self.playTrack(self.track); return
+		if (self.play_next): self.playTrack(self.play_next.pop(0)); return
+		if (not self.playlist):
+			if (not isinstance(self.w.views[-1], AudiosView)): return
+			self.playlist = self.w.views[-1].l
+		self.pl_pos = (self.pl_pos+1) % len(self.playlist)
+		self.playTrack()
+
+	def playPrevTrack(self):
+		if (not self.playlist):
+			if (not isinstance(self.w.views[-1], AudiosView)): return
+			self.playlist = self.w.views[-1].l
+		if (self.pl_pos): self.pl_pos -= 1
+		self.playTrack()
+
+	def selectPlayingTrack(self):
+		for ii, i in enumerate(self.w.views[-1].l):
+			if (isinstance(i, dict) and i['url'] == self.track.get('url')): self.w.views[-1].selectAndScroll(ii); break
+
+	def stop(self):
+		self.p.stop()
+		self.track = dict()
+		self.w.views[-1].s = -1
+
+	def setPlaylist(self, l, n=-1, peer_id=int()):
+		self.playlist = l
+		self.pl_pos = n
+		self.pl_peer = peer_id
+
+	def playNext(self, t):
+		self.play_next.append(t)
+		for ii, i in enumerate(self.playlist):
+			if (isinstance(i, dict) and i['url'] == t['url']): self.pl_pos = ii; break
 
 	def toggleRepeat(self):
 		self.repeat = not self.repeat
+
+	@property
+	def trackline(self):
+		return 'Error' if (self.error) else ('%(artist)s — %(title)s' % self.track) if (self.track) else ''
 
 app = App()
 
@@ -284,22 +401,12 @@ def prev(self, c):
 
 @app.onkey('s')
 def stop(self, c):
-	self.p.stop()
-	self.w.views[-1].s = -1
+	self.stop()
+	self.setPlaylist([])
 
 @app.onkey('r')
 def repeat(self, c):
 	self.toggleRepeat()
-
-@app.onkey('n')
-def pnext(self, c):
-	if (self.w.views[-1].n in self.play_next): self.play_next.remove(self.w.views[-1].n)
-	else: self.play_next.append(self.w.views[-1].n)
-
-@app.onkey('b')
-def stsel(self, c):
-	if (self.w.views[-1].s != -1): self.w.views[-1].n = self.w.views[-1].s
-	self.w.views[-1].scrollToSelected()
 
 @app.onkey(curses.KEY_MOUSE)
 def mouse(self, c):
@@ -308,7 +415,7 @@ def mouse(self, c):
 	if (self.mouse): stdscr.move(y, x)
 	h, w = self.stdscr.getmaxyx()
 	if (bstate == curses.BUTTON4_PRESSED): self.w.views[-1].t = max(self.w.views[-1].t-3, 0)
-	elif (bstate == curses.REPORT_MOUSE_POSITION and len(self.w.views[-1].l) > h): self.w.views[-1].t = min(self.w.views[-1].t+3, len(self.w.views[-1].l)-h)
+	elif (bstate == curses.REPORT_MOUSE_POSITION and len(self.w.views[-1].l) > h): self.w.views[-1].t = min(self.w.views[-1].t+3, len(self.w.views[-1].l)-h+2-(self.w.views[-1].l[-1] is None))
 	else:
 		if (y < h-2):
 			if (bstate == curses.BUTTON1_PRESSED):
@@ -326,7 +433,7 @@ def mouse(self, c):
 				if (self.p.is_playing()): self.p.set_position((x-14)/(w-12-14+1))
 
 def main():
-	app.addView(SCVSplitView(-2))
+	app.addView(VKAudioView())
 	app.run()
 
 if (__name__ == '__main__'):
