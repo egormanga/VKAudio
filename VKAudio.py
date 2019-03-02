@@ -419,9 +419,8 @@ def repeat(self, c):
 
 @app.onkey(curses.KEY_MOUSE)
 def mouse(self, c):
-	try: id, x, y, z, bstate = (self.mouse or curses).getmouse()
+	try: id, x, y, z, bstate = curses.getmouse()
 	except (curses.error, IndexError): id = x = y = z = bstate = 0
-	if (self.mouse): stdscr.move(y, x)
 	h, w = self.stdscr.getmaxyx()
 	if (bstate == curses.BUTTON4_PRESSED): self.w.views[-1].t = max(self.w.views[-1].t-3, 0)
 	elif (bstate == curses.REPORT_MOUSE_POSITION and len(self.w.views[-1].l) > h): self.w.views[-1].t = min(self.w.views[-1].t+3, len(self.w.views[-1].l)-h+2-(self.w.views[-1].l[-1] is None))
