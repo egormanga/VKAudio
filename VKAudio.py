@@ -131,6 +131,7 @@ class AudiosView(SCSelectingListView):
 		super().__init__([int()])
 		self.peer_id, self.im = peer_id, im
 		self.toLoad = bool()
+		self.toReselect = bool()
 		self.loading = bool()
 
 	def draw(self, stdscr):
@@ -140,11 +141,12 @@ class AudiosView(SCSelectingListView):
 		if (self.l[0] is 0 and not self.toLoad):
 			stdscr.addstr(0, 0, 'Loading'.center(self.w), curses.A_STANDOUT)
 			self.toLoad = True
+			self.toReselect = True
 			return
 		if (self.toLoad):
 			self.load()
 			self.toLoad = False
-			self.app.selectPlayingTrack()
+			if (self.toReselect): self.app.selectPlayingTrack(); self.toReselect = False
 
 	def key(self, c):
 		if (c == curses.KEY_DOWN):
