@@ -21,7 +21,9 @@ class VKAudioView(SCVSplitView):
 
 class DialogsView(SCSelectingListView):
 	def __init__(self):
-		super().__init__([{'name': '* My Audios', 'id': -1}, {'name': '* My Friends', 'id': -2}])
+		super().__init__([{'name': '* My Audios', 'id': -1},
+				  {'name': '* My Friends', 'id': -2},
+				  {'name': '* Audio Search', 'id': -3}])
 		self.toLoad = bool()
 		self.loading = bool()
 
@@ -61,13 +63,14 @@ class DialogsView(SCSelectingListView):
 		elif (isinstance(self.l[self.n], int)): self.loading = True; self.toLoad = True; return
 		elif (self.l[self.n]['id'] == -1): self.app.w.addView(AudiosView(self.app.user_id))
 		elif (self.l[self.n]['id'] == -2): self.app.w.addView(FriendsView())
+		elif (self.l[self.n]['id'] == -3): self.app.w.addView(AudioSearchView())
 		else: self.app.w.addView(AudiosView(self.l[self.n]['id'], im=True))
 
 	def load(self):
 		if (self.l[-1] is False): self.l[-1] = None; return
 		if (not getvksid()): self.app.w.addView(LoginView()); return
 		r = dialogs(count=self.h-1, start_message_id=self.l[-1] if (isinstance(self.l[-1], int)) else 0, extended=True, parse_attachments=False)
-		if (len(self.l) > 2): self.l.pop()
+		if (len(self.l) > 3): self.l.pop()
 		for i in r['items']:
 			try:
 				if (i['conversation']['peer']['type'] == 'user'): u = S(r['profiles'])['id', i['conversation']['peer']['id']][0]; self.l.append(S(u)&{'name': ' '.join(S(u)@['first_name', 'last_name'])})
@@ -127,9 +130,9 @@ class FriendsView(SCSelectingListView):
 		self.l += l+[True]
 
 class AudiosView(SCSelectingListView):
-	def __init__(self, peer_id, im=False):
+	def __init__(self, peer_id, search=None, im=False):
 		super().__init__([int()])
-		self.peer_id, self.im = peer_id, im
+		self.peer_id, self.search, self.im = peer_id, search, im
 		self.toLoad = bool()
 		self.toReselect = bool()
 		self.loading = bool()
@@ -162,7 +165,9 @@ class AudiosView(SCSelectingListView):
 			t = self.l[self.n]
 			for ii, i in enumerate(self.app.play_next):
 				if (isinstance(i, dict) and al_audio_eq(i, t)): del self.app.play_next[ii]; return
-			else: self.app.playNext(t)
+			else:
+				self.app.playNext(t)
+				self.app.setPlaylist(self.l, self.n, self.peer_id)
 		elif (c == 'b'):
 			self.app.selectPlayingTrack()
 		else: return super().key(c)
@@ -190,8 +195,11 @@ class AudiosView(SCSelectingListView):
 	def load(self):
 		if (self.l[-1] is False): self.l[-1] = None; return
 
-		if (not self.im): # TODO: playlists
-			if (not getvksid()): self.app.w.addView(LoginView()); return
+		if (not getvksid()): self.app.w.addView(LoginView()); return
+		if (self.search):
+			r = API.audio.search(owner_id=self.peer_id, q=self.search, offset=self.l.pop())
+			l = r['playlists'][1]['list']
+		elif (not self.im): # TODO: playlists
 			r = API.audio.get(owner_id=self.peer_id, offset=self.l.pop())
 			l = r['list']
 		else:
@@ -201,6 +209,23 @@ class AudiosView(SCSelectingListView):
 			if (self.l and self.l[-1] == i): continue
 			self.l.append(i)
 		self.l.append((r['has_more'] and r['next_from']) if (l) else None)
+
+class AudioSearchView(SCView):
+	def draw(self, stdscr):
+		self.h, self.w = stdscr.getmaxyx()
+		eh, ew = 5, 48
+		ey, ex = (self.h-eh)//2, (self.w-ew)//2
+		ep = curses.newwin(eh, ew, ey, ex)
+		ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
+		for i in range(1, eh-1): ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
+		ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
+		ep.addstr(1, 2, 'Audio Search'.center(ew-4))
+		ep.addstr(2, 2, 'Query:')
+		ep.refresh()
+		y, x = stdscr.getbegyx()
+		search = curses.textpad.Textbox(curses.newwin(y+1, x+ew-10, ey+2, ex+9))
+		self.app.w.views.pop()
+		self.app.w.addView(AudiosView(self.app.user_id, search=search.edit()))
 
 class ProgressView(SCView):
 	def draw(self, stdscr):
@@ -220,7 +245,7 @@ class LoginView(SCView):
 			self.result = str()
 
 		def do_command(self, ch):
-			if (ch in (curses.ascii.BS, curses.KEY_BACKSPACE)): self.result = self.result[:-1]
+			if (ch in ('\b', curses.KEY_BACKSPACE)): self.result = self.result[:-1]
 			return super().do_command(ch)
 
 		def _insert_printable_char(self, ch):
@@ -260,6 +285,42 @@ class HelpView(SCView):
 	def key(self, c):
 		self.app.w.views.pop()
 		return True
+
+class FindView(SCView):
+	def __init__(self):
+		self.q = '/'
+		self.found = None
+
+	def init(self):
+		self.app.views[-1].focus = 1
+
+	def draw(self, stdscr):
+		self.app.views[-1].p[1].views[-2].draw(stdscr)
+		self.h, self.w = stdscr.getmaxyx()
+		with lc(''): stdscr.addstr(0, 0, self.q.encode(locale.getpreferredencoding()))
+
+	def key(self, c):
+		if (c == '\b' or c == curses.KEY_BACKSPACE):
+			self.q = self.q[:-1]
+			if (not self.q):
+				self.cancel()
+				self.app.waitkeyrelease(c)
+		elif (c == '\n' or c == '\033' or c == curses.KEY_EXIT):
+			self.cancel()
+			if (c == '\n'): self.app.w.views[-1].key(c)
+		elif (c.ch.isprintable()):
+			self.q += c.ch
+			for i in range(len(self.app.w.views[-1].l)):
+				if (self.q[1:] in self.app.w.views[-1].item(i)[0]):
+					self.app.w.views[-1].selectAndScroll(i)
+					self.found = i
+					break
+			else: self.found = None
+		return True
+
+	def cancel(self):
+		self.app.views[-1].focus = 0
+		self.app.views[-1].p[1].views.pop()
 
 class QuitView(SCView):
 	def draw(self, stdscr):
@@ -366,6 +427,7 @@ class App(SCApp):
 app = App()
 
 @app.onkey('q')
+@app.onkey('й') # same on cyrillic layout
 @app.onkey('\033')
 @app.onkey(curses.KEY_BACKSPACE)
 @app.onkey(curses.KEY_EXIT)
@@ -374,6 +436,8 @@ def back(self, c):
 	self.w.views.pop()
 
 @app.onkey('h')
+@app.onkey('р') # same on cyrillic layout
+@app.onkey(curses.KEY_F1)
 def help(self, c):
 	self.w.addView(HelpView())
 
@@ -399,25 +463,41 @@ def seek(self, c):
 
 @app.onkey(' ')
 @app.onkey('p')
+@app.onkey('з') # same on cyrillic layout
 def pause(self, c):
 	self.p.pause()
 
 @app.onkey('a')
+@app.onkey('ф') # same on cyrillic layout
 def next(self, c):
 	self.playNextTrack(force_next=True)
 
 @app.onkey('z')
+@app.onkey('я') # same on cyrillic layout
 def prev(self, c):
 	self.playPrevTrack()
 
 @app.onkey('s')
+@app.onkey('ы') # same on cyrillic layout
 def stop(self, c):
 	self.stop()
 	self.setPlaylist([])
 
 @app.onkey('r')
+@app.onkey('к') # same on cyrillic layout
 def repeat(self, c):
 	self.toggleRepeat()
+
+@app.onkey('/')
+@app.onkey('.') # same on cyrillic layout
+@app.onkey('^F')
+@app.onkey(curses.KEY_FIND)
+def find(self, c):
+	self.views[-1].p[1].addView(FindView())
+
+@app.onkey('^L')
+def redraw(self, c):
+	self.stdscr.redrawwin()
 
 @app.onkey(curses.KEY_MOUSE)
 def mouse(self, c):
