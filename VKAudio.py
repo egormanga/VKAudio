@@ -161,14 +161,14 @@ class AudiosView(SCSelectingListView):
 		elif (c == curses.KEY_END):
 			self.n = len(self.l)-1-(self.l[-1] is None)
 			self.scrollToSelected()
-		elif (c == 'n'):
+		elif (c == 'n' or c == 'т'):
 			t = self.l[self.n]
 			for ii, i in enumerate(self.app.play_next):
 				if (isinstance(i, dict) and al_audio_eq(i, t)): del self.app.play_next[ii]; return
 			else:
 				self.app.playNext(t)
 				self.app.setPlaylist(self.l, self.n, self.peer_id)
-		elif (c == 'b'):
+		elif (c == 'b' or c == 'и'):
 			self.app.selectPlayingTrack()
 		else: return super().key(c)
 		return True
@@ -311,7 +311,7 @@ class FindView(SCView):
 		elif (c.ch.isprintable()):
 			self.q += c.ch
 			for i in range(len(self.app.w.views[-1].l)):
-				if (self.q[1:] in self.app.w.views[-1].item(i)[0]):
+				if (self.q[1:].casefold() in self.app.w.views[-1].item(i)[0].casefold()):
 					self.app.w.views[-1].selectAndScroll(i)
 					self.found = i
 					break
@@ -334,7 +334,7 @@ class QuitView(SCView):
 
 	def key(self, c):
 		if (c == '\n'): self.app.w.views.pop()
-		elif (c == 'q' or c == '\033' or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): self.app.views.pop()
+		elif (c == 'q' or c == 'й' or c == '\b' or c == '\033' or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): self.app.views.pop()
 		else: return super().key(c)
 		return True
 
@@ -427,7 +427,8 @@ class App(SCApp):
 app = App()
 
 @app.onkey('q')
-@app.onkey('й') # same on cyrillic layout
+@app.onkey('й')
+@app.onkey('\b')
 @app.onkey('\033')
 @app.onkey(curses.KEY_BACKSPACE)
 @app.onkey(curses.KEY_EXIT)
@@ -435,8 +436,12 @@ def back(self, c):
 	if (len(self.w.views) == 1): self.w.addView(QuitView()); return
 	self.w.views.pop()
 
+@app.onkey('с') # FIXME ^C on cyrillic
+def ctrl_c(self, c):
+	raise KeyboardInterrupt()
+
 @app.onkey('h')
-@app.onkey('р') # same on cyrillic layout
+@app.onkey('р')
 @app.onkey(curses.KEY_F1)
 def help(self, c):
 	self.w.addView(HelpView())
@@ -463,33 +468,33 @@ def seek(self, c):
 
 @app.onkey(' ')
 @app.onkey('p')
-@app.onkey('з') # same on cyrillic layout
+@app.onkey('з')
 def pause(self, c):
 	self.p.pause()
 
 @app.onkey('a')
-@app.onkey('ф') # same on cyrillic layout
+@app.onkey('ф')
 def next(self, c):
 	self.playNextTrack(force_next=True)
 
 @app.onkey('z')
-@app.onkey('я') # same on cyrillic layout
+@app.onkey('я')
 def prev(self, c):
 	self.playPrevTrack()
 
 @app.onkey('s')
-@app.onkey('ы') # same on cyrillic layout
+@app.onkey('ы')
 def stop(self, c):
 	self.stop()
 	self.setPlaylist([])
 
 @app.onkey('r')
-@app.onkey('к') # same on cyrillic layout
+@app.onkey('к')
 def repeat(self, c):
 	self.toggleRepeat()
 
 @app.onkey('/')
-@app.onkey('.') # same on cyrillic layout
+@app.onkey('.')
 @app.onkey('^F')
 @app.onkey(curses.KEY_FIND)
 def find(self, c):
