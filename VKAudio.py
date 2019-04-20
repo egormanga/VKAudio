@@ -167,7 +167,83 @@ class AudiosView(SCLoadingSelectingListView):
 			self.l.append(SCLoadingListView.LoadItem(bool(l) and r.get('has_more'), r.get('next_from')))
 		return ret
 
-class AudioSearchView(SCView): # TODO FIXME: unicode input
+class AudioSearchView(SCView):
+	class SearchBox(curses.textpad.Textbox):
+		def __init__(self, *args, **kwargs):
+			super().__init__(*args, **kwargs)
+			self.result = str()
+
+		def _insert_printable_char(self, ch):
+			self._update_max_yx()
+			y, x = self.win.getyx()
+			backyx = None
+			while (y < self.maxy or x < self.maxx):
+				if (self.insert_mode): oldch = SCKey(self.win.inch())
+				try: self.win.addch(ch.ch)
+				except curses.error: pass
+				if (not self.insert_mode or not oldch.ch.isprintable()): break
+				ch = oldch
+				y, x = self.win.getyx()
+				if (backyx is None): backyx = y, x
+			if (backyx is not None): self.win.move(*backyx)
+
+		def do_command(self, ch):
+			ch = SCKey(ch)
+			self._update_max_yx()
+			y, x = self.win.getyx()
+			self.lastcmd = ch
+			if (ch.ch.isprintable()):
+				if (y < self.maxy or x < self.maxx): self._insert_printable_char(ch)
+			elif (ch == curses.ascii.SOH): # ^A
+				self.win.move(y, 0)
+			elif (ch in (curses.ascii.STX, curses.KEY_LEFT, curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)):
+				if (x > 0): self.win.move(y, x-1)
+				elif (y == 0): pass
+				elif (self.stripspaces): self.win.move(y-1, self._end_of_line(y-1))
+				else: self.win.move(y-1, self.maxx)
+				if (ch in (curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)): self.win.delch()
+			elif (ch == curses.ascii.EOT): # ^D
+				self.win.delch()
+			elif (ch == curses.ascii.ENQ): # ^E
+				if (self.stripspaces): self.win.move(y, self._end_of_line(y))
+				else: self.win.move(y, self.maxx)
+			elif (ch in (curses.ascii.ACK, curses.KEY_RIGHT)): # ^F
+				if (x < self.maxx): self.win.move(y, x+1)
+				elif (y == self.maxy): pass
+				else: self.win.move(y+1, 0)
+			elif (ch == curses.ascii.BEL): # ^G
+				return 0
+			elif (ch == curses.ascii.NL): # ^J
+				if (self.maxy == 0): return 0
+				elif (y < self.maxy): self.win.move(y+1, 0)
+			elif (ch == curses.ascii.VT): # ^K
+				if (x == 0 and self._end_of_line(y) == 0): self.win.deleteln()
+				else:
+					self.win.move(y, x)
+					self.win.clrtoeol()
+			elif (ch == curses.ascii.FF): # ^L
+				self.win.refresh()
+			elif (ch in (curses.ascii.SO, curses.KEY_DOWN)): # ^N
+				if (y < self.maxy):
+					self.win.move(y+1, x)
+					if (x > self._end_of_line(y+1)): self.win.move(y+1, self._end_of_line(y+1))
+			elif (ch == curses.ascii.SI): # ^O
+				self.win.insertln()
+			elif (ch in (curses.ascii.DLE, curses.KEY_UP)): # ^P
+				if (y > 0):
+					self.win.move(y-1, x)
+					if (x > self._end_of_line(y-1)): self.win.move(y-1, self._end_of_line(y-1))
+			return 1
+
+		def edit(self, validate=None):
+			while (True):
+				ch = self.win.get_wch()
+				if (validate): ch = validate(ch)
+				if (not ch): continue
+				if (not self.do_command(ch)): break
+				self.win.refresh()
+			return self.gather()
+
 	def draw(self, stdscr):
 		self.h, self.w = stdscr.getmaxyx()
 		eh, ew = 5, 48
@@ -180,7 +256,7 @@ class AudioSearchView(SCView): # TODO FIXME: unicode input
 		ep.addstr(2, 2, 'Query:')
 		ep.refresh()
 		y, x = stdscr.getbegyx()
-		search = curses.textpad.Textbox(curses.newwin(y+1, x+ew-10, ey+2, ex+9))
+		search = self.SearchBox(curses.newwin(y+1, x+ew-10, ey+2, ex+9))
 		self.app.w.views.pop()
 		self.app.w.addView(AudiosView(self.app.user_id, search=search.edit()))
 
@@ -202,7 +278,7 @@ class LoginView(SCView):
 			self.result = str()
 
 		def do_command(self, ch):
-			if (ch in ('\b', '\x7f', curses.KEY_BACKSPACE)): self.result = self.result[:-1]
+			if (ch in (curses.ascii.DEL, curses.ascii.BS, curses.KEY_BACKSPACE)): self.result = self.result[:-1]
 			return super().do_command(ch)
 
 		def _insert_printable_char(self, ch):
@@ -272,12 +348,12 @@ class FindView(SCView): # TODO: more intuitive control?
 		with lc(''): stdscr.addstr(0, 0, self.q.encode(locale.getpreferredencoding()))
 
 	def key(self, c):
-		if (c == '\b' or c == '\x7f' or c == curses.KEY_BACKSPACE):
+		if (c == curses.ascii.DEL or c == curses.ascii.BS or c == curses.KEY_BACKSPACE):
 			self.q = self.q[:-1]
 			if (not self.q):
 				self.cancel()
 				self.app.waitkeyrelease(c)
-		elif (c == '\n' or c == '\033' or c == curses.KEY_EXIT):
+		elif (c == '\n' or c == curses.ascii.ESC or c == curses.KEY_EXIT):
 			self.cancel()
 			if (c == '\n'): self.app.w.top.key(c)
 		elif (c.ch.isprintable()):
@@ -306,7 +382,7 @@ class QuitView(SCView):
 
 	def key(self, c):
 		if (c == '\n'): self.app.w.views.pop()
-		elif (c == 'q' or c == 'й' or c == '\b' or c == '\x7f' or c == '\033' or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): self.app.views.pop()
+		elif (c == 'q' or c == 'й' or c == curses.ascii.DEL or c == curses.ascii.BS or c == curses.ascii.ESC or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): self.app.views.pop()
 		else: return super().key(c)
 		return True
 
@@ -434,9 +510,9 @@ app = App()
 
 @app.onkey('q')
 @app.onkey('й')
-@app.onkey('\b')
-@app.onkey('\x7f')
-@app.onkey('\033')
+@app.onkey(curses.ascii.BS)
+@app.onkey(curses.ascii.DEL)
+@app.onkey(curses.ascii.ESC)
 @app.onkey(curses.KEY_BACKSPACE)
 @app.onkey(curses.KEY_EXIT)
 def back(self, c):
