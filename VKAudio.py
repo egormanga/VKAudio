@@ -1,17 +1,32 @@
 #!/usr/bin/python3
 # VK Audio Player
 
-import gi, vlc, html, struct
+import vlc, html, struct, notify2, dbus.service, dbus.mainloop.glib
 from api import *
 from Scurses import *
 from utils import *; logstart('VKAudio')
-try: gi.require_version('Notify', '0.7')
-except ValueError: pass
-else: from gi.repository import GLib, Notify
+from gi.repository import GLib
 
 db.setfile('VKAudio.db')
 db.setbackup(False)
 tokens.require('access_token', 'offline')
+
+class MediaPlayer2(dbus.service.Object):
+	def __init__(self, app, *args, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.app = app
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def PlayPause(self):
+		self.app.playPause()
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def Previous(self):
+		self.app.playPrevTrack()
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def Next(self):
+		self.app.playNextTrack()
 
 class VKAudioView(SCVSplitView):
 	def __init__(self):
@@ -25,8 +40,9 @@ class VKAudioView(SCVSplitView):
 class DialogsView(SCLoadingSelectingListView):
 	def __init__(self):
 		super().__init__([{'name': '* My Audios', 'id': -1},
-				  {'name': '* My Friends', 'id': -2},
-				  {'name': '* Audio Search', 'id': -3}])
+				  {'name': '* My Albums', 'id': -2},
+				  {'name': '* My Friends', 'id': -3},
+				  {'name': '* Audio Search', 'id': -4}])
 		self.toLoad = True
 		self.loading = True
 
@@ -39,15 +55,16 @@ class DialogsView(SCLoadingSelectingListView):
 	def select(self):
 		if (super().select()): return True
 		elif (self.l[self.n]['id'] == -1): self.app.w.addView(AudiosView(self.app.user_id))
-		elif (self.l[self.n]['id'] == -2): self.app.w.addView(FriendsView())
-		elif (self.l[self.n]['id'] == -3): self.app.w.addView(AudioSearchView())
+		elif (self.l[self.n]['id'] == -2): self.app.w.addView(AlbumsView())
+		elif (self.l[self.n]['id'] == -3): self.app.w.addView(FriendsView())
+		elif (self.l[self.n]['id'] == -4): self.app.w.addView(AudioSearchView())
 		else: self.app.w.addView(AudiosView(self.l[self.n]['id'], im=True))
 
 	def load(self):
 		ret = super().load()
 		if (not ret):
-			if (not getvksid()): self.app.w.addView(LoginView()); return
-			r = dialogs(count=self.h-1, start_message_id=(self.l[-1].next_value or 0), extended=True, parse_attachments=False)
+			try: r = dialogs(count=self.h-1, start_message_id=(self.l[-1].next_value or 0), extended=True, parse_attachments=False)
+			except VKAlLoginError: self.app.w.addView(LoginView()); return
 			if (len(self.l) > 3): self.l.pop()
 			for i in r['items']:
 				try:
@@ -79,36 +96,57 @@ class FriendsView(SCLoadingSelectingListView):
 	def load(self):
 		ret = super().load()
 		if (not ret):
-			if (not getvksid()): self.app.w.addView(LoginView()); return
-			r = API.audio.getFriends(exclude=S(',').join(S(self.l[:-1])@['id']))
-			if (len(self.l)): self.l.pop()
+			try: r = API.audio.getFriends(exclude=S(',').join(S(self.l[:-1])@['id']))
+			except VKAlLoginError: self.app.w.addView(LoginView()); return
+			if (self.l): self.l.pop()
 			l = user(r)
 			if (not l or l[0] in self.l): self.l.append(self.LoadItem(False)); return
 			self.l += l
 			self.l.append(self.LoadItem())
 		return ret
 
-class AudiosView(SCLoadingSelectingListView):
-	def __init__(self, peer_id, search=None, im=False):
+class AlbumsView(SCLoadingSelectingListView):
+	def __init__(self):
 		super().__init__([])
-		self.peer_id, self.search, self.im = peer_id, search, im
-		self.toReselect = bool()
 		self.toLoad = True
 		self.loading = True
 
+	def item(self, i):
+		ret, text, attrs = super().item(i)
+		if (not ret):
+			text = S(self.l[i]['title']).fit(self.w)
+		return (ret, text, attrs)
+
+	def select(self):
+		ret = super().select()
+		if (not ret):
+			self.app.w.addView(AudiosView(self.l[self.n]['owner_id'], album_id=self.l[self.n]['id'], access_hash=self.l[self.n]['access_hash']))
+		return ret
+
+	def load(self):
+		ret = super().load()
+		if (not ret):
+			try: r = API.audio.getAlbums(owner_id=self.app.user_id)
+			except VKAlLoginError: self.app.w.addView(LoginView()); return
+			if (self.l): self.l.pop()
+			self.l += r['items']
+			self.l.append(self.LoadItem(False)) # TODO FIXME
+		return ret
+
+class AudiosView(SCLoadingSelectingListView):
+	def __init__(self, peer_id, album_id=-1, access_hash=None, search=None, im=False):
+		super().__init__([])
+		self.peer_id, self.album_id, self.access_hash, self.search, self.im = peer_id, album_id, access_hash, search, im
+		self.toLoad = True
+		self.loading = True
+		self.toReselect = True
+
 	def draw(self, stdscr):
-		try: super().draw(stdscr) # FIXME crash
-		except curses.error: return
-		if (self.loading): self.loading = False; return
-		if (self.l[0] is 0 and not self.toLoad):
-			stdscr.addstr(0, 0, 'Loading'.center(self.w), curses.A_STANDOUT)
-			self.toLoad = True
-			self.toReselect = True
-			return
-		if (self.toLoad):
-			self.load()
-			self.toLoad = False
-			if (self.toReselect): self.app.selectPlayingTrack(); self.toReselect = False
+		try: super().draw(stdscr) # FIXME crash?
+		except curses.error: pass
+		if (self.toReselect and not isinstance(self.l[0], SCLoadingListView.LoadItem)):
+			self.app.selectPlayingTrack()
+			self.toReselect = False
 
 	def key(self, c):
 		if (c == 'n' or c == 'т'):
@@ -119,7 +157,7 @@ class AudiosView(SCLoadingSelectingListView):
 				self.app.playNext(t)
 				self.app.setPlaylist(self.l, self.n, self.peer_id)
 		elif (c == 'k' or c == 'л'):
-			self.selectAndScroll(random.randrange(len(self.l)))
+			self.selectAndScroll(random.randrange(len(self.l)-1))
 		elif (c == 'b' or c == 'и'):
 			self.app.selectPlayingTrack()
 		elif (c == 'd' or c == 'в'):
@@ -127,6 +165,8 @@ class AudiosView(SCLoadingSelectingListView):
 			curses.endwin()
 			os.system(f"""wget "{al_audio_get_url(self.app.user_id, self.l[self.n])}" -O "{'%(artist)s - %(title)s.mp3' % self.l[self.n]}" -q --show-progress""")
 			curses.reset_prog_mode()
+		elif (c == 'l' or c == 'д'):
+			self.app.w.addView(LyricsView(self.l[self.n]['lyrics_id']))
 		else: return super().key(c)
 		return True
 
@@ -151,21 +191,53 @@ class AudiosView(SCLoadingSelectingListView):
 	def load(self):
 		ret = super().load()
 		if (not ret):
-			if (not getvksid()): self.app.w.addView(LoginView()); return
-			if (self.search):
-				r = API.audio.search(owner_id=self.peer_id, q=self.search, offset=self.l.pop().next_value)
-				l = r['playlists'][1]['list'] if (len(r['playlists']) > 1) else []
-			elif (not self.im): # TODO: playlists
-				r = API.audio.get(owner_id=self.peer_id, offset=self.l.pop().next_value)
-				l = r['list']
-			else:
-				r = API.messages.getHistoryAttachments(peer_id=self.peer_id, media_type='audio', count=self.h, start_from=self.l.pop().next_value)
-				l = S(r['items'])@['attachment']@['audio']
+			try:
+				if (self.search):
+					r = API.audio.search(owner_id=self.peer_id, q=self.search, offset=self.l.pop().next_value)
+					l = r['playlists'][-1]['list'] if (r['playlists']) else []
+				elif (not self.im):
+					r = API.audio.get(owner_id=self.peer_id, album_id=self.album_id, access_hash=self.access_hash, offset=self.l.pop().next_value)
+					l = r['list']
+				else:
+					r = API.messages.getHistoryAttachments(peer_id=self.peer_id, media_type='audio', count=self.h, start_from=self.l.pop().next_value)
+					l = S(r['items'])@['attachment']@['audio']
+			except VKAlLoginError: self.app.w.addView(LoginView()); return
 			for i in l:
 				if (self.l and self.l[-1] == i): continue
 				self.l.append(i)
 			self.l.append(SCLoadingListView.LoadItem(bool(l) and r.get('has_more'), r.get('next_from')))
 		return ret
+
+class PlaylistView(AudiosView): # TODO
+	pass
+
+class LyricsView(SCView):
+	eh, ew = 18, 75
+
+	def __init__(self, lyrics_id):
+		super().__init__()
+		self.lyrics_id = lyrics_id
+		self.text = str()
+		self.offset = int()
+
+	def init(self):
+		self.text = S(API.audio.getLyrics(lyrics_id=self.lyrics_id)['text']).wrap(self.ew-3)
+
+	def draw(self, stdscr):
+		self.h, self.w = stdscr.getmaxyx()
+		ep = stdscr.subpad(self.eh, self.ew, (self.h-self.eh)//2, (self.w-self.ew)//2)
+		ep.addstr(0, 0, '╭'+'─'*(self.ew-2)+'╮')
+		for i in range(1, self.eh-1): ep.addstr(i, 0, '│'+' '*(self.ew-2)+'│')
+		ep.addstr(self.eh-2, 0, '╰'+'─'*(self.ew-2)+'╯')
+		for ii, i in enumerate(self.text.split('\n')[self.offset:self.eh-3+self.offset]): ep.addstr(ii+1, 2, i)
+
+	def key(self, c):
+		if (c == curses.KEY_UP):
+			self.offset = max(0, self.offset-1)
+		elif (c == curses.KEY_DOWN):
+			self.offset = min(self.offset+1, self.text.count('\n')-self.eh+4)
+		else: return super().key(c)
+		return True
 
 class AudioSearchView(SCView):
 	class SearchBox(curses.textpad.Textbox):
@@ -174,6 +246,7 @@ class AudioSearchView(SCView):
 			self.result = str()
 
 		def _insert_printable_char(self, ch):
+			self.result += ch.ch
 			self._update_max_yx()
 			y, x = self.win.getyx()
 			backyx = None
@@ -197,6 +270,7 @@ class AudioSearchView(SCView):
 			elif (ch == curses.ascii.SOH): # ^A
 				self.win.move(y, 0)
 			elif (ch in (curses.ascii.STX, curses.KEY_LEFT, curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)):
+				self.result = self.result[:-1]
 				if (x > 0): self.win.move(y, x-1)
 				elif (y == 0): pass
 				elif (self.stripspaces): self.win.move(y-1, self._end_of_line(y-1))
@@ -242,7 +316,7 @@ class AudioSearchView(SCView):
 				if (not ch): continue
 				if (not self.do_command(ch)): break
 				self.win.refresh()
-			return self.gather()
+			return self.result
 
 	def draw(self, stdscr):
 		self.h, self.w = stdscr.getmaxyx()
@@ -266,8 +340,10 @@ class ProgressView(SCView):
 		pl = max(0, self.app.p.get_length())
 		pp = min(1, self.app.p.get_position())
 		pgrstr = f"{self.app.strfTime(pl*pp/1000)}/{self.app.strfTime(pl/1000)} %s {time.strftime('%X')}"
-		stdscr.addstr(0, 1, S(app.trackline).fit(self.w-2-self.app.repeat*2).ljust(self.w-3)+' ↺'[self.app.repeat], curses.A_UNDERLINE)
-		stdscr.addstr(1, 1, pgrstr % Progress.format_bar(pp, 1, self.w-len(pgrstr)))
+		icons = '↺'*self.app.repeat
+		if (icons): icons = ' '+icons
+		stdscr.addstr(0, 1, S(self.app.trackline).cyclefit(self.w-2-len(icons), self.app.tl_rotate//10, start_delay=10).ljust(self.w-2-len(icons))+icons, curses.A_UNDERLINE)
+		stdscr.addstr(1, 1, pgrstr % Progress.format_bar(pp, 1, self.w-len(pgrstr))) # TODO: background
 		stdscr.addstr(1, 1, pgrstr.split('/')[0], curses.A_BLINK*(not self.app.p.is_playing()))
 		if (pl and self.app.p.get_state() == vlc.State.Ended): self.app.playNextTrack()
 
@@ -301,8 +377,10 @@ class LoginView(SCView):
 		ep.addstr(3, 2, 'Password:')
 		ep.refresh()
 		y, x = stdscr.getbegyx()
-		login, password = curses.textpad.Textbox(curses.newwin(y+1, x+ew-13, ey+2, ex+12)), self.PasswordBox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
+		login = curses.textpad.Textbox(curses.newwin(y+1, x+ew-13, ey+2, ex+12))
+		password = self.PasswordBox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
 		al_login(*map(str.strip, (login.edit(), password.edit())))
+		db.save()
 		self.app.w.views.pop()
 
 class HelpView(SCView):
@@ -371,6 +449,8 @@ class FindView(SCView): # TODO: more intuitive control?
 		self.app.top.p[1].views.pop()
 
 class QuitView(SCView):
+	l, t = (), int() # ох, костыли...
+
 	def draw(self, stdscr):
 		self.h, self.w = stdscr.getmaxyx()
 		eh, ew = 8, 23
@@ -378,7 +458,7 @@ class QuitView(SCView):
 		ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
 		for i in range(1, eh-1): ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
 		ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
-		for ii, i in enumerate('Are you sure you\nwant to exit?\nPress the key again\nto exit or select\nto stay.'.split('\n')): ep.addstr(1+ii, 2, i.center(ew-3), curses.A_BOLD)
+		for ii, i in enumerate('Are you sure you\nwant to exit?\nPress back again to\nexit or select to\nstay in VKAudio.'.split('\n')): ep.addstr(1+ii, 2, i.center(ew-3), curses.A_BOLD)
 
 	def key(self, c):
 		if (c == '\n'): self.app.w.views.pop()
@@ -387,6 +467,10 @@ class QuitView(SCView):
 		return True
 
 class App(SCApp):
+	def __del__(self):
+		try: self.p.stop()
+		except Exception: pass
+
 	def init(self):
 		super().init()
 		curses.use_default_colors()
@@ -400,19 +484,24 @@ class App(SCApp):
 		self.p.get_instance().log_unset()
 		self.p.audio_set_volume(100)
 
-		try: self.eventloop = GLib.MainLoop()
-		except NameError: self.eventloop = None
+		try: self.glib_eventloop = GLib.MainLoop()
+		except NameError: pass
 		else:
-			self.eventloopthread = threading.Thread(target=self.eventloop.run, daemon=True)
-			self.eventloopthread.start()
+			self.dbus_eventloop = dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+			threading.Thread(target=self.glib_eventloop.run, daemon=True).start()
+			#self.dbus_b = dbus.SessionBus()
+			#self.dbus_busname = dbus.service.BusName('org.mpris.MediaPlayer2.vkaudio', bus=self.dbus_b)
+			#self.dbus_mp = MediaPlayer2(self, self.dbus_busname, '/org/mpris/MediaPlayer2')
+			# TODO FIXME ???
 
-		try: Notify.init('VKAudio')
-		except Exception as ex: self.notify = None
+		try: notify2.init('VKAudio')
+		except Exception: self.notify = None
 		else:
-			self.notify = Notify.Notification.new('')
+			self.notify = notify2.Notification('')
 			self.notify.set_category('x-gnome.music')
-			self.notify.set_urgency(Notify.Urgency.LOW)
-			self.notify.set_hint('action-icons', GLib.Variant('b', True))
+			self.notify.set_urgency(notify2.URGENCY_LOW)
+			self.notify.set_hint('action-icons', True)
+			self.notify.connect('closed', noop)
 			self.notify.add_action('media-skip-backward', 'Previous track', lambda *args: self.playPrevTrack())
 			self.notify.add_action('media-playback-pause', 'Pause', lambda *args: self.playPause())
 			self.notify.add_action('media-skip-forward', 'Next track', lambda *args: self.playNextTrack())
@@ -427,6 +516,7 @@ class App(SCApp):
 		self.error = None
 		self.repeat = bool()
 		self.clicked = bool()
+		self.tl_rotate = int()
 
 		self.w = self.top.p[0]
 
@@ -444,6 +534,7 @@ class App(SCApp):
 		except Exception as ex: self.error = ex; return False
 		self.notifyPlaying(t)
 		self.track = t
+		self.tl_rotate = 0
 		self.selectPlayingTrack()
 		return True
 
@@ -454,7 +545,7 @@ class App(SCApp):
 			if (not isinstance(self.w.top, AudiosView)): return
 			self.playlist = self.w.top.l
 			self.pl_peer = self.w.top.peer_id
-		self.pl_pos = (self.pl_pos+1) % len(self.playlist)
+		self.pl_pos = (self.pl_pos+1) % (len(self.playlist)-1)
 		self.playTrack()
 
 	def playPrevTrack(self):
@@ -504,7 +595,10 @@ class App(SCApp):
 
 	@property
 	def trackline(self):
-		return 'Error: '+str(self.error) if (self.error is not None) else ('%(artist)s — %(title)s' % self.track) if (self.track) else ''
+		if (self.error is not None): return f"Error: {self.error}"
+		if (not self.track): return ''
+		self.tl_rotate += 1
+		return S('%(artist)s — %(title)s' % self.track)
 
 app = App()
 
@@ -516,7 +610,7 @@ app = App()
 @app.onkey(curses.KEY_BACKSPACE)
 @app.onkey(curses.KEY_EXIT)
 def back(self, c):
-	if (len(self.w.views) == 1): self.w.addView(QuitView()); return
+	if (len(self.w.views) <= 1): self.w.addView(QuitView()); return
 	self.w.views.pop()
 
 @app.onkey('h')
