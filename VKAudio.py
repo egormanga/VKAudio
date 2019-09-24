@@ -63,7 +63,7 @@ class DialogsView(SCLoadingSelectingListView):
 	def load(self):
 		ret = super().load()
 		if (not ret):
-			try: r = dialogs(count=self.h-1, start_message_id=(self.l[-1].next_value or 0), extended=True, parse_attachments=False)
+			try: r = dialogs(count=self.h-1, start_message_id=(self.l[-1].next_value or None), extended=True, parse_attachments=False)
 			except VKAlLoginError: self.app.w.addView(LoginView()); return
 			if (len(self.l) > 3): self.l.pop()
 			for i in r['items']:
@@ -72,7 +72,7 @@ class DialogsView(SCLoadingSelectingListView):
 					elif (i['conversation']['peer']['type'] == 'chat'): self.l.append({'name': i['conversation']['chat_settings']['title'], 'id': i['conversation']['peer']['id']})
 					elif (i['conversation']['peer']['type'] == 'group'): self.l.append(S(r['groups'])['id', -i['conversation']['peer']['id']][0])
 				except IndexError: pass
-			self.l.append(self.LoadItem(r['has_more'], i['conversation']['last_message_id']))
+			self.l.append(self.LoadItem(r.get('has_more', bool(r)), i['conversation']['last_message_id']-1))
 		return ret
 
 class FriendsView(SCLoadingSelectingListView):
@@ -176,7 +176,7 @@ class AudiosView(SCLoadingSelectingListView):
 			for jj, j in enumerate(self.app.play_next):
 				if (al_audio_eq(j, self.l[i])): pn_pos = str(jj+1); break
 			else: pn_pos = ''
-			t_attrs = (pn_pos+' ' if (pn_pos) else '')+('HQ ' if (self.l[i]['is_hq']) else '')+self.app.strfTime(self.l[i]['duration'])
+			t_attrs = (pn_pos+' ' if (pn_pos) else '')+('HQ ' if (self.l[i].get('is_hq')) else '')+self.app.strfTime(self.l[i]['duration'])
 			text = S('%(artist)s — %(title)s' % self.l[i]).fit(self.w-len(t_attrs)-1)
 			text += t_attrs.rjust(self.w-len(text))
 		return (ret, text, attrs)
@@ -188,24 +188,41 @@ class AudiosView(SCLoadingSelectingListView):
 			self.app.playTrack()
 		return ret
 
+	# TODO: somehow prettify following:
+
+	@staticmethod
+	@cachedfunction
+	def _search(*args, **kwargs):
+		return API.audio.search(*args, **kwargs)
+
+	@staticmethod
+	@cachedfunction
+	def _get(*args, **kwargs):
+		return API.audio.get(*args, **kwargs)
+
+	@staticmethod
+	@cachedfunction
+	def _history(*args, **kwargs):
+		return API.messages.getHistoryAttachments(*args, **kwargs)
+
 	def load(self):
 		ret = super().load()
 		if (not ret):
 			try:
 				if (self.search):
-					r = API.audio.search(owner_id=self.peer_id, q=self.search, offset=self.l.pop().next_value)
+					r = self._search(owner_id=self.peer_id, q=self.search, offset=self.l.pop().next_value)
 					l = r['playlists'][-1]['list'] if (r['playlists']) else []
 				elif (not self.im):
-					r = API.audio.get(owner_id=self.peer_id, album_id=self.album_id, access_hash=self.access_hash, offset=self.l.pop().next_value)
+					r = self._get(owner_id=self.peer_id, album_id=self.album_id, access_hash=self.access_hash, offset=self.l.pop().next_value)
 					l = r['list']
 				else:
-					r = API.messages.getHistoryAttachments(peer_id=self.peer_id, media_type='audio', count=self.h, start_from=self.l.pop().next_value)
+					r = self._history(peer_id=self.peer_id, media_type='audio', count=self.h, start_from=self.l.pop().next_value)
 					l = S(r['items'])@['attachment']@['audio']
 			except VKAlLoginError: self.app.w.addView(LoginView()); return
 			for i in l:
 				if (self.l and self.l[-1] == i): continue
 				self.l.append(i)
-			self.l.append(SCLoadingListView.LoadItem(bool(l) and r.get('has_more'), r.get('next_from')))
+			self.l.append(SCLoadingListView.LoadItem(r.get('has_more', bool(l)), r.get('next_from')))
 		return ret
 
 class PlaylistView(AudiosView): # TODO
