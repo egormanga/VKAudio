@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # VK Audio Player
 
-import vlc, html, struct, notify2, dbus.service, dbus.mainloop.glib
+import vlc, notify2, dbus.service, dbus.mainloop.glib
 from api import *
 from Scurses import *
 from utils import *; logstart('VKAudio')
@@ -163,7 +163,9 @@ class AudiosView(SCLoadingSelectingListView):
 		elif (c == 'd' or c == 'в'):
 			curses.def_prog_mode()
 			curses.endwin()
-			os.system(f"""wget "{al_audio_get_url(self.app.user_id, self.l[self.n])}" -O "{'%(artist)s - %(title)s.mp3' % self.l[self.n]}" -q --show-progress""")
+			url = al_audio_get_url(self.app.user_id, self.l[self.n])
+			print(f"Downloading: {url}")
+			os.system(f"""wget "{url}" -O "{'%(artist)s - %(title)s.mp3' % self.l[self.n]}" -q --show-progress""")
 			curses.reset_prog_mode()
 		elif (c == 'l' or c == 'д'):
 			self.app.w.addView(LyricsView(self.l[self.n]['lyrics_id']))
@@ -365,13 +367,35 @@ class ProgressView(SCView):
 		if (pl and self.app.p.get_state() == vlc.State.Ended): self.app.playNextTrack()
 
 class LoginView(SCView):
+	class LoginBox(curses.textpad.Textbox):
+		def do_command(self, ch):
+			self._update_max_yx()
+			y, x = self.win.getyx()
+			self.lastcmd = ch
+			if (ch in (curses.ascii.STX, curses.KEY_LEFT, curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)):
+				if (x > 0): self.win.move(y, x-1)
+				elif (y == 0): pass
+				elif (self.stripspaces): self.win.move(y-1, self._end_of_line(y-1))
+				else: self.win.move(y-1, self.maxx)
+				if (ch in (curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)): self.win.delch()
+			return super().do_command(ch)
+
 	class PasswordBox(curses.textpad.Textbox):
 		def __init__(self, *args, **kwargs):
 			super().__init__(*args, **kwargs)
 			self.result = str()
 
 		def do_command(self, ch):
-			if (ch in (curses.ascii.DEL, curses.ascii.BS, curses.KEY_BACKSPACE)): self.result = self.result[:-1]
+			self._update_max_yx()
+			y, x = self.win.getyx()
+			self.lastcmd = ch
+			if (ch in (curses.ascii.STX, curses.KEY_LEFT, curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)):
+				self.result = self.result[:-1]
+				if (x > 0): self.win.move(y, x-1)
+				elif (y == 0): pass
+				elif (self.stripspaces): self.win.move(y-1, self._end_of_line(y-1))
+				else: self.win.move(y-1, self.maxx)
+				if (ch in (curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)): self.win.delch()
 			return super().do_command(ch)
 
 		def _insert_printable_char(self, ch):
@@ -394,7 +418,7 @@ class LoginView(SCView):
 		ep.addstr(3, 2, 'Password:')
 		ep.refresh()
 		y, x = stdscr.getbegyx()
-		login = curses.textpad.Textbox(curses.newwin(y+1, x+ew-13, ey+2, ex+12))
+		login = self.LoginBox(curses.newwin(y+1, x+ew-13, ey+2, ex+12))
 		password = self.PasswordBox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
 		al_login(*map(str.strip, (login.edit(), password.edit())))
 		db.save()
@@ -545,8 +569,7 @@ class App(SCApp):
 		self.error = None
 		self.p.stop()
 		try:
-			al_audio_get_url(self.user_id, t) # in-place
-			self.p.set_mrl(t['url'])
+			self.p.set_mrl(al_audio_get_url(self.user_id, t))
 			self.p.play()
 		except Exception as ex: self.error = ex; return False
 		self.notifyPlaying(t)
@@ -717,6 +740,11 @@ def mouse(self, c):
 		if (x < 14):
 			if (bstate in (curses.BUTTON1_PRESSED, curses.BUTTON3_PRESSED, curses.BUTTON3_RELEASED)):
 				self.p.pause()
+			elif (bstate == curses.BUTTON4_PRESSED):
+				self.playPrevTrack()
+			elif (bstate == curses.REPORT_MOUSE_POSITION or bstate == 2097152):
+				self.playNextTrack()
+
 		elif (x <= w-12 and self.p.is_playing()):
 			if (bstate == curses.BUTTON1_PRESSED):
 				self.p.set_position((x-14)/(w-12-14+1))
