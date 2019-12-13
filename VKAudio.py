@@ -472,9 +472,9 @@ class FindView(SCView): # TODO: more intuitive control?
 			if (not self.q):
 				self.cancel()
 				self.app.waitkeyrelease(c)
-		elif (c == '\n' or c == curses.ascii.ESC or c == curses.KEY_EXIT):
+		elif (c == curses.ascii.NL or c == curses.ascii.ESC or c == curses.KEY_EXIT):
 			self.cancel()
-			if (c == '\n'): self.app.w.top.key(c)
+			if (c == curses.ascii.NL): self.app.w.top.key(c)
 		elif (c.ch.isprintable()):
 			self.q += c.ch
 			for i in range(self.app.w.top.n, len(self.app.w.top.l)):
@@ -502,7 +502,7 @@ class QuitView(SCView):
 		for ii, i in enumerate('Are you sure you\nwant to exit?\nPress back again to\nexit or select to\nstay in VKAudio.'.split('\n')): ep.addstr(1+ii, 2, i.center(ew-3), curses.A_BOLD)
 
 	def key(self, c):
-		if (c == '\n'): self.app.w.views.pop()
+		if (c == curses.ascii.NL): self.app.w.views.pop()
 		elif (c == 'q' or c == 'й' or c == curses.ascii.DEL or c == curses.ascii.BS or c == curses.ascii.ESC or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): self.app.views.pop()
 		else: return super().key(c)
 		return True
