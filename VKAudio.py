@@ -42,7 +42,8 @@ class DialogsView(SCLoadingSelectingListView):
 		super().__init__([{'name': '* My Audios', 'id': -1},
 				  {'name': '* My Albums', 'id': -2},
 				  {'name': '* My Friends', 'id': -3},
-				  {'name': '* Audio Search', 'id': -4}])
+				  {'name': '* Audio Search', 'id': -4},
+				  {'name': '* Recommendations', 'id': -5}])
 		self.toLoad = True
 		self.loading = True
 
@@ -58,6 +59,7 @@ class DialogsView(SCLoadingSelectingListView):
 		elif (self.l[self.n]['id'] == -2): self.app.w.addView(AlbumsView())
 		elif (self.l[self.n]['id'] == -3): self.app.w.addView(FriendsView())
 		elif (self.l[self.n]['id'] == -4): self.app.w.addView(AudioSearchView())
+		elif (self.l[self.n]['id'] == -5): self.app.w.addView(AlbumsView(recomms=True))
 		else: self.app.w.addView(AudiosView(self.l[self.n]['id'], im=True))
 
 	def load(self):
@@ -106,8 +108,9 @@ class FriendsView(SCLoadingSelectingListView):
 		return ret
 
 class AlbumsView(SCLoadingSelectingListView):
-	def __init__(self):
+	def __init__(self, *, recomms=False):
 		super().__init__([])
+		self.recomms = recomms
 		self.toLoad = True
 		self.loading = True
 
@@ -126,11 +129,15 @@ class AlbumsView(SCLoadingSelectingListView):
 	def load(self):
 		ret = super().load()
 		if (not ret):
-			try: r = API.audio.getAlbums(owner_id=self.app.user_id)
+			try:
+				if (self.recomms):
+					if (len(self.l) < 2): r = API.audio.getAlbums(owner_id=self.app.user_id, section='recoms'); r['next'] = 0
+					else: r = S(API.audio.getRecommendations(offset=self.l[-1].next_value)).translate({'items': 'playlists'})
+				else: r = API.audio.getAlbums(owner_id=self.app.user_id)
 			except VKAlLoginError: self.app.w.addView(LoginView()); return
 			if (self.l): self.l.pop()
 			self.l += r['items']
-			self.l.append(self.LoadItem(False)) # TODO FIXME
+			self.l.append(SCLoadingListView.LoadItem(r.get('next') is not None, r.get('next')))
 		return ret
 
 class AudiosView(SCLoadingSelectingListView):
@@ -213,13 +220,16 @@ class AudiosView(SCLoadingSelectingListView):
 			try:
 				if (self.search):
 					r = self._search(owner_id=self.peer_id, q=self.search, offset=self.l.pop().next_value)
-					l = r['playlists'][-1]['list'] if (r['playlists']) else []
-				elif (not self.im):
-					r = self._get(owner_id=self.peer_id, album_id=self.album_id, access_hash=self.access_hash, offset=self.l.pop().next_value)
-					l = r['list']
-				else:
+					l = sum(map(operator.itemgetter('list'), r['playlists']), [])
+					if (r['playlists']):
+						self.album_id, self.access_hash = S(r['playlists'][-1])@['id', 'access_hash']
+						self.search = False
+				elif (self.im):
 					r = self._history(peer_id=self.peer_id, media_type='audio', count=self.h, start_from=self.l.pop().next_value)
 					l = S(r['items'])@['attachment']@['audio']
+				else:
+					r = self._get(owner_id=self.peer_id, album_id=self.album_id, access_hash=self.access_hash, offset=self.l.pop().next_value)
+					l = r['list']
 			except VKAlLoginError: self.app.w.addView(LoginView()); return
 			for i in l:
 				if (self.l and self.l[-1] == i): continue
