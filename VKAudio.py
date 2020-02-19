@@ -220,9 +220,9 @@ class AudiosView(SCLoadingSelectingListView):
 			try:
 				if (self.search):
 					r = self._search(owner_id=self.peer_id, q=self.search, offset=self.l.pop().next_value)
-					l = sum(map(operator.itemgetter('list'), r['playlists']), [])
-					if (r['playlists']):
-						self.album_id, self.access_hash = S(r['playlists'][-1])@['id', 'access_hash']
+					l = r['playlist']['list'] if (r['playlist']) else []
+					if (l):
+						self.album_id, self.access_hash = S(r['playlist'])@['id', 'access_hash']
 						self.search = False
 				elif (self.im):
 					r = self._history(peer_id=self.peer_id, media_type='audio', count=self.h, start_from=self.l.pop().next_value)
@@ -234,7 +234,7 @@ class AudiosView(SCLoadingSelectingListView):
 			for i in l:
 				if (self.l and self.l[-1] == i): continue
 				self.l.append(i)
-			self.l.append(SCLoadingListView.LoadItem(r.get('has_more', bool(l)), r.get('next_from')))
+			self.l.append(SCLoadingListView.LoadItem(bool(r.get('next_from')) and r.get('has_more', bool(l)), r.get('next_from')))
 		return ret
 
 class PlaylistView(AudiosView): # TODO
