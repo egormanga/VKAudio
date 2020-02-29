@@ -333,7 +333,8 @@ class AudioSearchView(SCView):
 
 		def edit(self, validate=None):
 			while (True):
-				ch = self.win.get_wch()
+				try: ch = self.win.get_wch()
+				except curses.error: continue # TODO FIXME
 				if (validate): ch = validate(ch)
 				if (not ch): continue
 				if (not self.do_command(ch)): break
