@@ -48,10 +48,12 @@ class DialogsView(SCLoadingSelectingListView):
 		self.loading = True
 
 	def item(self, i):
-		ret, text, attrs = super().item(i)
+		ret, items = super().item(i)
 		if (not ret):
+			text, attrs = items[0]
 			text = S(self.l[i]['name']).fit(self.w)
-		return (ret, text, attrs)
+			items = [(text, attrs)]
+		return (ret, items)
 
 	def select(self):
 		if (super().select()): return True
@@ -82,10 +84,12 @@ class FriendsView(SCLoadingSelectingListView):
 		self.loading = True
 
 	def item(self, i):
-		ret, text, attrs = super().item(i)
+		ret, items = super().item(i)
 		if (not ret):
+			text, attrs = items[0]
 			text = S(self.l[i]['name']).fit(self.w)
-		return (ret, text, attrs)
+			items = [(text, attrs)]
+		return (ret, items)
 
 	def select(self):
 		if (super().select()): return True
@@ -109,10 +113,12 @@ class AlbumsView(SCLoadingSelectingListView):
 		self.loading = True
 
 	def item(self, i):
-		ret, text, attrs = super().item(i)
+		ret, items = super().item(i)
 		if (not ret):
+			text, attrs = items[0]
 			text = S(self.l[i]['title']).fit(self.w)
-		return (ret, text, attrs)
+			items = [(text, attrs)]
+		return (ret, items)
 
 	def select(self):
 		if (super().select()): return True
@@ -171,15 +177,19 @@ class AudiosView(SCLoadingSelectingListView):
 		return True
 
 	def item(self, i):
-		ret, text, attrs = super().item(i)
+		ret, items = super().item(i)
 		if (not ret):
 			for jj, j in enumerate(self.app.play_next):
 				if (al_audio_eq(j, self.l[i])): pn_pos = str(jj+1); break
 			else: pn_pos = ''
 			t_attrs = (pn_pos+' ' if (pn_pos) else '')+('HQ ' if (self.l[i].get('is_hq')) else '')+self.app.strfTime(self.l[i]['duration'])
-			text = S('%(artist)s — %(title)s' % self.l[i]).fit(self.w-len(t_attrs)-1)
-			text += t_attrs.rjust(self.w-len(text))
-		return (ret, text, attrs)
+			attrs = items[0][1]
+			text1 = ('%(artist)s — %(title)s' % self.l[i]) + ' '*bool(self.l[i]['subtitle'])
+			text2 = self.l[i]['subtitle']
+			text1 = S(text1).fit(self.w - (len(text2)+len(t_attrs)) - 1)
+			text3 = t_attrs.rjust(self.w - (len(text1)+len(text2)))
+			items = [(text1, attrs), (text2, attrs | curses.A_DIM*(not attrs & curses.A_STANDOUT)), (text3, attrs)]
+		return (ret, items)
 
 	def select(self):
 		if (super().select()): return True
@@ -356,7 +366,7 @@ class AudioSearchView(SCView):
 		ep.refresh()
 		y, x = stdscr.getbegyx()
 		search = self.SearchBox(curses.newwin(y+1, x+ew-10, ey+2, ex+9))
-		self.app.w.views.pop()
+		self.app.w.popView()
 		self.app.w.addView(AudiosView(self.app.user_id, search=search.edit()))
 
 class ProgressView(SCView):
@@ -442,7 +452,7 @@ class LoginView(SCView):
 		password = self.PasswordBox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
 		al_login(*map(str.strip, (login.edit(), password.edit())))
 		db.save()
-		self.app.w.views.pop()
+		self.app.w.popView()
 
 class HelpView(SCView):
 	def draw(self, stdscr):
@@ -472,7 +482,7 @@ left/right, nums — seek
 ^L — force redraw""".split('\n')): ep.addstr(ii+1, 2, i)
 
 	def key(self, c):
-		self.app.w.views.pop()
+		self.app.w.popView()
 		self.app.w.top.touch()
 		return True
 
@@ -522,7 +532,7 @@ class FindView(SCView): # TODO: more intuitive control?
 
 	def cancel(self):
 		self.app.top.focus = 0
-		self.app.top.p[1].views.pop()
+		self.app.top.p[1].popView()
 		self.app.top.p[1].top.touch()
 
 class QuitView(SCView):
@@ -540,8 +550,8 @@ class QuitView(SCView):
 		for ii, i in enumerate('Are you sure you\nwant to exit?\nPress back again to\nexit or select to\nstay in VKAudio.'.split('\n')): ep.addstr(1+ii, 2, i.center(ew-3), curses.A_BOLD)
 
 	def key(self, c):
-		if (c == curses.ascii.NL): self.app.w.views.pop(); self.app.w.top.touch()
-		elif (c == 'q' or c == 'й' or c == curses.ascii.DEL or c == curses.ascii.BS or c == curses.ascii.ESC or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): self.app.views.pop()
+		if (c == curses.ascii.NL): self.app.w.popView(); self.app.w.top.touch()
+		elif (c == 'q' or c == 'й' or c == curses.ascii.DEL or c == curses.ascii.BS or c == curses.ascii.ESC or c == curses.KEY_BACKSPACE or c == curses.KEY_EXIT): self.app.popView()
 		else: return super().key(c)
 		return True
 
@@ -694,7 +704,7 @@ app = App(proc_rate=10)
 @app.onkey(curses.KEY_EXIT)
 def back(self, c):
 	if (len(self.w.views) <= 1): self.w.addView(QuitView()); return
-	self.w.views.pop()
+	self.w.popView()
 
 @app.onkey('h')
 @app.onkey('р')
@@ -769,14 +779,14 @@ def mouse(self, c):
 		if (bstate == curses.BUTTON4_PRESSED): self.w.top.t = max(self.w.top.t-3, 0); self.w.top.touch()
 		elif (bstate == curses.REPORT_MOUSE_POSITION or bstate == 2097152 and len(self.w.top.l) > h): self.w.top.t = min(self.w.top.t+3, len(self.w.top.l)-h+2-(self.w.top.l[-1] is None)); self.w.top.touch()
 		elif (bstate == curses.BUTTON1_PRESSED):
-			if (isinstance(self.w.top, QuitView)): self.w.views.pop(); return
+			if (isinstance(self.w.top, QuitView)): self.w.popView(); return
 			self.w.top.n = self.w.top.t+y
 			if (time.time() < self.clicked): self.w.top.select(); self.clicked = True
 			self.w.top.touch()
 		elif (bstate == curses.BUTTON1_RELEASED):
 			self.clicked = False if (self.clicked == True) else time.time()+0.2
 		elif (bstate == curses.BUTTON3_PRESSED):
-			if (isinstance(self.w.top, QuitView)): self.views.pop(); return
+			if (isinstance(self.w.top, QuitView)): self.popView(); return
 			back(self, c)
 	elif (y == h-2 and x >= w-2):
 		if (bstate == curses.BUTTON1_PRESSED): self.toggleRepeat()
