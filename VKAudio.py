@@ -11,22 +11,101 @@ db.setfile('VKAudio.db')
 db.setbackup(False)
 tokens.require('access_token', 'offline')
 
-class MediaPlayer2(dbus.service.Object):
+class MediaPlayer2(dbus.service.Object): # TODO (tracklist, ...)
 	def __init__(self, app, *args, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.app = app
 
+	@dbus.service.method('org.mpris.MediaPlayer2')
+	def Raise(self):
+		pass
+
+	@dbus.service.method('org.mpris.MediaPlayer2')
+	def Quit(self):
+		self.app.popView()
+
 	@dbus.service.method('org.mpris.MediaPlayer2.Player')
-	def PlayPause(self):
-		self.app.playPause()
+	def Next(self):
+		self.app.playNextTrack()
 
 	@dbus.service.method('org.mpris.MediaPlayer2.Player')
 	def Previous(self):
 		self.app.playPrevTrack()
 
 	@dbus.service.method('org.mpris.MediaPlayer2.Player')
-	def Next(self):
-		self.app.playNextTrack()
+	def Pause(self):
+		self.app.p.pause()
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def PlayPause(self):
+		self.app.playPause()
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def Stop(self):
+		self.app.stop()
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def Play(self):
+		self.app.p.play()
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def Seek(self):
+		TODO
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def SetPosition(self):
+		TODO
+
+	@dbus.service.method('org.mpris.MediaPlayer2.Player')
+	def OpenUri(self):
+		pass
+
+	@dbus.service.method(dbus.PROPERTIES_IFACE, in_signature='ss', out_signature='v')
+	def Get(self, interface, prop):
+		return self.GetAll(interface)[prop]
+
+	@dbus.service.method(dbus.PROPERTIES_IFACE, in_signature='s', out_signature='a{sv}')
+	def GetAll(self, interface):
+		if (interface == 'org.mpris.MediaPlayer2'):
+			return {
+				'CanQuit': True,
+				'CanRaise': False,
+				'HasTrackList': False, # TODO
+				'Identity': 'VKAudio',
+				'SupportedUriSchemes': [''],
+				'SupportedMimeTypes': [''],
+			}
+		elif (interface == 'org.mpris.MediaPlayer2.Player'):
+			return {
+				'PlaybackStatus': 'Playing' if (self.app.p.is_playing()) else 'Paused', # TODO: 'Stopped'
+				'LoopStatus': 'Track' if (self.app.repeat) else 'None',
+				'Rate': 1.0,
+				'Shuffle': False,
+				'Metadata': { # TODO
+					'mpris:trackid': self.track['title'],
+					'mpris:length': self.app.p.get_length(),
+				},
+				'Volume': 1.0,
+				'Position': self.app.p.get_position()*self.app.p.get_length(),
+				'MinimumRate': 1.0,
+				'MaximumRate': 1.0,
+				'CanGoNext': True,
+				'CanGoPrevious': True,
+				'CanPlay': True,
+				'CanPause': True,
+				'CanSeek': True, # TODO
+				'CanControl': True,
+			}
+		else: return {}
+
+	@dbus.service.method(dbus.PROPERTIES_IFACE, in_signature='ssv')
+	def Set(self, interface, prop, value):
+		if (prop == 'LoopStatus'): self.app.repeat = value
+		self.PropertiesChanged(interface, {}, [prop])
+
+	@dbus.service.signal(dbus.PROPERTIES_IFACE, signature='sa{sv}as')
+	def PropertiesChanged(self, interface, changed_props, invalidated_props):
+		pass
 
 class VKAudioView(SCVSplitView):
 	def __init__(self):
@@ -184,10 +263,10 @@ class AudiosView(SCLoadingSelectingListView):
 			else: pn_pos = ''
 			t_attrs = (pn_pos+' ' if (pn_pos) else '')+('HQ ' if (self.l[i].get('is_hq')) else '')+self.app.strfTime(self.l[i]['duration'])
 			attrs = items[0][1]
-			text1 = ('%(artist)s — %(title)s' % self.l[i]) + ' '*bool(self.l[i]['subtitle'])
-			text2 = self.l[i]['subtitle']
-			text1 = S(text1).fit(self.w - (len(text2)+len(t_attrs)) - 1)
-			text3 = t_attrs.rjust(self.w - (len(text1)+len(text2)))
+			text1 = S(('%(artist)s — %(title)s' % self.l[i]) + ' '*bool(self.l[i].get('subtitle')))
+			text2 = S(self.l[i].get('subtitle', '')).fit(self.w - text1.fullwidth() - len(t_attrs) - 1)
+			text1 = text1.fit(self.w - text2.fullwidth() - len(t_attrs) - 1)
+			text3 = t_attrs.rjust(self.w - text1.fullwidth() - text2.fullwidth())
 			items = [(text1, attrs), (text2, attrs | curses.A_DIM*(not attrs & curses.A_STANDOUT)), (text3, attrs)]
 		return (ret, items)
 
@@ -578,22 +657,20 @@ class App(SCApp):
 		else:
 			self.dbus_eventloop = dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 			threading.Thread(target=self.glib_eventloop.run, daemon=True).start()
-			self.dbus_b = dbus.SessionBus()
-			self.dbus_busname = dbus.service.BusName('org.mpris.MediaPlayer2.vkaudio', bus=self.dbus_b)
-			self.dbus_mp = MediaPlayer2(self, self.dbus_busname, '/org/mpris/MediaPlayer2')
-			# TODO: player controls
+			self.dbus = dbus.SessionBus()
+			self.mpris = MediaPlayer2(self, dbus.service.BusName('org.mpris.MediaPlayer2.vkaudio', bus=self.dbus), '/org/mpris/MediaPlayer2')
 
 		try: notify2.init('VKAudio')
 		except Exception: self.notify = None
 		else:
-			self.notify = notify2.Notification('')
+			self.notify = notify2.Notification('', icon='media-playback-start')
 			self.notify.set_category('x-gnome.music')
 			self.notify.set_urgency(notify2.URGENCY_LOW)
 			self.notify.set_hint('action-icons', True)
 			self.notify.connect('closed', noop)
-			self.notify.add_action('media-skip-backward', 'Previous track', lambda *args: self.playPrevTrack())
-			self.notify.add_action('media-playback-pause', 'Pause', lambda *args: self.playPause())
-			self.notify.add_action('media-skip-forward', 'Next track', lambda *args: self.playNextTrack())
+			self.notify.add_action('media-skip-backward', 'Previous track', lambda *_: self.playPrevTrack())
+			self.notify.add_action('media-playback-pause', 'Pause', lambda *_: self.playPause())
+			self.notify.add_action('media-skip-forward', 'Next track', lambda *_: self.playNextTrack())
 
 		self.user_id = user()[0]['id']
 
@@ -615,7 +692,7 @@ class App(SCApp):
 	@staticmethod
 	def strfTime(t): return time.strftime('%H:%M:%S', time.gmtime(t)).lstrip('0').lstrip(':')
 
-	def playTrack(self, t=None):
+	def playTrack(self, t=None, *, notify=True):
 		if (t is None): return self.playTrack(self.playlist[self.pl_pos])
 		self.error = None
 		self.p.stop()
@@ -623,14 +700,14 @@ class App(SCApp):
 			self.p.set_mrl(al_audio_get_url(self.user_id, t))
 			self.p.play()
 		except Exception as ex: self.error = ex; return False
-		self.notifyPlaying(t)
+		if (notify): self.notifyPlaying(t)
 		self.track = t
 		self.tl_rotate = 0
 		self.selectPlayingTrack()
 		return True
 
 	def playNextTrack(self, force_next=False):
-		if (self.repeat and not force_next): self.playTrack(self.track); return
+		if (self.repeat and not force_next): self.playTrack(self.track, notify=False); return
 		if (self.play_next): self.playTrack(self.play_next.pop(0)); return
 		if (not self.playlist):
 			if (not isinstance(self.w.top, AudiosView)): return
@@ -768,6 +845,7 @@ def find(self, c):
 
 @app.onkey('^L')
 def redraw(self, c):
+	self.w.top.touch()
 	self.stdscr.redrawwin()
 
 @app.onkey(curses.KEY_MOUSE)
@@ -818,4 +896,4 @@ if (__name__ == '__main__'):
 	exit(main())
 else: logimported()
 
-# by Sdore, 2019
+# by Sdore, 2020
