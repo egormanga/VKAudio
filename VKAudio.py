@@ -7,8 +7,10 @@ from Scurses import *
 from utils import *; logstart('VKAudio')
 from gi.repository import GLib
 
+vk_login = str()
 db.setfile('VKAudio.db')
 db.setbackup(False)
+db.register('vk_login')
 tokens.require('access_token', 'offline')
 
 class MediaPlayer2(dbus.service.Object): # TODO (tracklist, ...)
@@ -487,6 +489,10 @@ class LoginView(SCView):
 				if (ch in (curses.ascii.BS, curses.ascii.DEL, curses.KEY_BACKSPACE)): self.win.delch()
 			return super().do_command(ch)
 
+		def set(self, s):
+			for i in s:
+				self._insert_printable_char(i)
+
 	class PasswordBox(curses.textpad.Textbox):
 		def __init__(self, *args, **kwargs):
 			super().__init__(*args, **kwargs)
@@ -513,6 +519,7 @@ class LoginView(SCView):
 			return self.result
 
 	def draw(self, stdscr):
+		global vk_login
 		if (not self.touched): return True
 		self.touched = False
 		self.h, self.w = stdscr.getmaxyx()
@@ -529,7 +536,21 @@ class LoginView(SCView):
 		y, x = stdscr.getbegyx()
 		login = self.LoginBox(curses.newwin(y+1, x+ew-13, ey+2, ex+12))
 		password = self.PasswordBox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
-		al_login(*map(str.strip, (login.edit(), password.edit())))
+		login.set(vk_login)
+
+		while (True):
+			ep.addstr(2, 2, 'VK Login:', curses.A_BOLD); ep.refresh()
+			try: l = login.edit().strip()
+			finally: ep.addstr(2, 2, 'VK Login:')
+
+			ep.addstr(3, 2, 'Password:', curses.A_BOLD); ep.refresh()
+			try: p = password.edit().strip()
+			finally: ep.addstr(3, 2, 'Password:')
+
+			try: al_login(l, p)
+			except VKAlLoginError as ex: ep.addstr(1, 2, str(ex).center(ew-4)); continue
+			else: vk_login = l; break
+
 		db.save()
 		self.app.w.popView()
 
@@ -636,8 +657,8 @@ class QuitView(SCView):
 
 class App(SCApp):
 	def __del__(self):
-		try: self.p.stop()
-		except Exception: pass
+		try: self.stop()
+		except AttributeError: pass
 
 	def init(self):
 		super().init()
@@ -707,8 +728,8 @@ class App(SCApp):
 		return True
 
 	def playNextTrack(self, force_next=False):
-		if (self.repeat and not force_next): self.playTrack(self.track, notify=False); return
 		if (self.play_next): self.playTrack(self.play_next.pop(0)); return
+		if (self.repeat and not force_next): self.playTrack(self.track, notify=False); return
 		if (not self.playlist):
 			if (not isinstance(self.w.top, AudiosView)): return
 			self.playlist = self.w.top.l
@@ -733,6 +754,7 @@ class App(SCApp):
 
 	def stop(self):
 		self.p.stop()
+		self.notify.close()
 		self.track = dict()
 		self.w.top.s = -1
 		self.w.top.touch()
@@ -886,8 +908,10 @@ def mouse(self, c):
 				self.seekFwd()
 
 def main():
+	global app
 	app.addView(VKAudioView())
-	app.run()
+	try: app.run()
+	finally: app.__del__()
 
 if (__name__ == '__main__'):
 	logstarted()
