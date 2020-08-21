@@ -8,8 +8,9 @@ from utils import *; logstart('VKAudio')
 from gi.repository import GLib
 
 vk_login = str()
-db.setfile('VKAudio.db')
+db.setfile('~/VKAudio.db')
 db.setbackup(False)
+db.setsensitive(True)
 db.register('vk_login')
 tokens.require('access_token', 'offline')
 
@@ -754,7 +755,7 @@ class App(SCApp):
 
 	def stop(self):
 		self.p.stop()
-		self.notify.close()
+		if (self.notify is not None): self.notify.close()
 		self.track = dict()
 		self.w.top.s = -1
 		self.w.top.touch()
