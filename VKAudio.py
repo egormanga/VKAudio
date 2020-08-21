@@ -8,10 +8,11 @@ from utils import *; logstart('VKAudio')
 from gi.repository import GLib
 
 vk_login = str()
+vk_pw = str()
 db.setfile('~/VKAudio.db')
 db.setbackup(False)
 db.setsensitive(True)
-db.register('vk_login')
+db.register('vk_login', 'vk_pw')
 tokens.require('access_token', 'offline')
 
 class MediaPlayer2(dbus.service.Object): # TODO (tracklist, ...)
@@ -80,7 +81,7 @@ class MediaPlayer2(dbus.service.Object): # TODO (tracklist, ...)
 			}
 		elif (interface == 'org.mpris.MediaPlayer2.Player'):
 			return {
-				'PlaybackStatus': 'Playing' if (self.app.p.is_playing()) else 'Paused', # TODO: 'Stopped'
+				'PlaybackStatus': 'Playing' if (self.app.p.is_playing()) else 'Paused' if (self.app.track) else 'Stopped',
 				'LoopStatus': 'Track' if (self.app.repeat) else 'None',
 				'Rate': 1.0,
 				'Shuffle': False,
@@ -149,7 +150,7 @@ class DialogsView(SCLoadingSelectingListView):
 	def load(self):
 		if (super().load()): return True
 		try: r = dialogs(count=self.h-1, start_message_id=(self.l[-1].next_value or None), extended=True, parse_attachments=False)
-		except VKAlLoginError: self.app.w.addView(LoginView()); return
+		except VKAlLoginError: self.app.w.addView(LoginView(self.load)); return
 		if (len(self.l) > 3): self.l.pop()
 		for i in r['items']:
 			try:
@@ -180,7 +181,7 @@ class FriendsView(SCLoadingSelectingListView):
 	def load(self):
 		if (super().load()): return True
 		try: r = API.audio.getFriends(exclude=S(',').join(S(self.l[:-1])@['id']))
-		except VKAlLoginError: self.app.w.addView(LoginView()); return
+		except VKAlLoginError: self.app.w.addView(LoginView(self.load)); return
 		if (self.l): self.l.pop()
 		l = user(r)
 		if (not l or l[0] in self.l): self.l.append(self.LoadItem(False)); return
@@ -213,7 +214,7 @@ class AlbumsView(SCLoadingSelectingListView):
 				if (len(self.l) < 2): r = API.audio.getAlbums(owner_id=self.app.user_id, section='recoms'); r['next'] = 0
 				else: r = S(API.audio.getRecommendations(offset=self.l[-1].next_value)).translate({'items': 'playlists'})
 			else: r = API.audio.getAlbums(owner_id=self.app.user_id)
-		except VKAlLoginError: self.app.w.addView(LoginView()); return
+		except VKAlLoginError: self.app.w.addView(LoginView(self.load)); return
 		if (self.l): self.l.pop()
 		self.l += r['items']
 		self.l.append(SCLoadingListView.LoadItem(r.get('next') is not None, r.get('next')))
@@ -310,7 +311,7 @@ class AudiosView(SCLoadingSelectingListView):
 			else:
 				r = self._get(owner_id=self.peer_id, album_id=self.album_id, access_hash=self.access_hash, offset=self.l.pop().next_value)
 				l = r['list']
-		except VKAlLoginError: self.app.w.addView(LoginView()); return
+		except VKAlLoginError: self.app.w.addView(LoginView(self.load)); return
 		for i in l:
 			if (self.l and self.l[-1] == i): continue
 			self.l.append(i)
@@ -477,6 +478,10 @@ class ProgressView(SCView):
 		stdscr.addstr(1, 1, pgrstr.split('/')[0], curses.A_BLINK*paused)
 
 class LoginView(SCView):
+	def __init__(self, callback=None):
+		super().__init__()
+		self.callback = callback or noop
+
 	class LoginBox(curses.textpad.Textbox):
 		def do_command(self, ch):
 			self._update_max_yx()
@@ -492,7 +497,8 @@ class LoginView(SCView):
 
 		def set(self, s):
 			for i in s:
-				self._insert_printable_char(i)
+				self._insert_printable_char(ord(i))
+			self.win.refresh()
 
 	class PasswordBox(curses.textpad.Textbox):
 		def __init__(self, *args, **kwargs):
@@ -516,13 +522,24 @@ class LoginView(SCView):
 			self.result += chr(ch)
 			return super()._insert_printable_char('*')
 
+		def set(self, s):
+			for i in s:
+				self._insert_printable_char(ord(i))
+			self.win.refresh()
+
 		def gather(self):
 			return self.result
 
 	def draw(self, stdscr):
-		global vk_login
+		global vk_login, vk_pw
 		if (not self.touched): return True
 		self.touched = False
+
+		l, p = vk_login, ub64(vk_pw)
+		try: al_login(l, p)
+		except VKAlLoginError: pass
+		else: self.app.w.popView(); self.callback(); return
+
 		self.h, self.w = stdscr.getmaxyx()
 		eh, ew = 6, 48
 		ey, ex = (self.h-eh)//2, (self.w-ew)//2
@@ -536,8 +553,9 @@ class LoginView(SCView):
 		ep.refresh()
 		y, x = stdscr.getbegyx()
 		login = self.LoginBox(curses.newwin(y+1, x+ew-13, ey+2, ex+12))
+		login.set(l)
 		password = self.PasswordBox(curses.newwin(y+1, x+ew-13, ey+3, ex+12))
-		login.set(vk_login)
+		password.set(p)
 
 		while (True):
 			ep.addstr(2, 2, 'VK Login:', curses.A_BOLD); ep.refresh()
@@ -550,10 +568,11 @@ class LoginView(SCView):
 
 			try: al_login(l, p)
 			except VKAlLoginError as ex: ep.addstr(1, 2, str(ex).center(ew-4)); continue
-			else: vk_login = l; break
+			else: vk_login, vk_pw = l, b64(p); break
 
 		db.save()
 		self.app.w.popView()
+		self.callback()
 
 class HelpView(SCView):
 	def draw(self, stdscr):
