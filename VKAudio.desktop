@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=VKAudio
+Exec=gnome-terminal --profile='Стандартный (без полосы прокрутки)' --title='VKAudio' -e "bash -ic 'python3 -m VKAudio'"
