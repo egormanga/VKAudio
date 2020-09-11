@@ -783,15 +783,23 @@ class App(SCApp):
 		self.w = self.top.p[0]
 
 	_lastproc = int()
-	_lastpos = int()
+	_lastpb = None
 	_lastmd = None
+	_lastpos = int()
 	def proc(self):
 		if (time.time()-self._lastproc >= 0.1):
 			self._lastproc = time.time()
+
+			pb = self.mpris.properties_org_mpris_MediaPlayer2_Player.PlaybackStatus
+			if (pb != self._lastpb):
+				self._lastpb = pb
+				self.update_properties(PlaybackStatus=pb)
+
 			md = self.mpris.properties_org_mpris_MediaPlayer2_Player.Metadata
 			if (md != self._lastmd):
 				self._lastmd = md
 				self.update_properties(Metadata=md)
+
 			pos = self.mpris.properties_org_mpris_MediaPlayer2_Player.Position
 			if (abs(pos-self._lastpos) > 500*1000):
 				self._lastpos = pos
