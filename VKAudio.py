@@ -3,6 +3,7 @@
 
 import vlc, notify2, dbus.service, dbus.mainloop.glib
 from api import *
+from cimg import *
 from Scurses import *
 from utils import *; logstart('VKAudio')
 from gi.repository import GLib
@@ -307,6 +308,20 @@ class AudiosView(SCLoadingSelectingListView):
 		else: return super().key(c)
 		return True
 
+	@staticmethod
+	@lrucachedfunction
+	def _color(cover): return tuple(i*1000//255 for i in pixel_color(openimg(cover)))
+
+	@classmethod
+	def _pair(cls, cover):
+		if (not curses.can_change_color()): return 0#curses.COLORS < 9 or
+		r, g, b = cls._color(cover)
+		color = 2#random.randrange(9, curses.COLORS)
+		curses.init_color(color, r, g, b)
+		pair = 2#random.randrange(9, curses.COLORS)
+		curses.init_pair(pair, color, curses.COLOR_WHITE if (max(r, g, b) < 500) else curses.COLOR_BLACK)
+		return curses.color_pair(pair)
+
 	def item(self, i):
 		ret, items = super().item(i)
 		if (not ret):
@@ -319,7 +334,11 @@ class AudiosView(SCLoadingSelectingListView):
 			text2 = S(self.l[i].get('subtitle', '')).fit(self.w - text1.fullwidth() - len(t_attrs) - 1)
 			text1 = text1.fit(self.w - text2.fullwidth() - len(t_attrs) - 1)
 			text3 = t_attrs.rjust(self.w - text1.fullwidth() - text2.fullwidth())
-			items = [(text1, attrs), (text2, attrs | curses.A_DIM*(not attrs & curses.A_STANDOUT)), (text3, attrs)]
+			if (not attrs & curses.A_STANDOUT): color = 0
+			else:
+				cover = self.app.get_cover(self.l[i])
+				color = self._pair(cover) if (cover) else 0
+			items = [(text1, attrs | color), (text2, attrs | color | curses.A_DIM*(not attrs & curses.A_STANDOUT)), (text3, attrs | color)]
 		return (ret, items)
 
 	def select(self):
@@ -736,7 +755,8 @@ class App(SCApp):
 	def init(self):
 		super().init()
 		curses.use_default_colors()
-		curses.init_pair(1, curses.COLOR_WHITE, 8)
+		try: curses.init_pair(1, curses.COLOR_WHITE, 8)
+		except curses.error: curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)  # fbcon
 		curses.curs_set(False)
 		curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
 		curses.mouseinterval(0)
