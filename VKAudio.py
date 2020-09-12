@@ -78,7 +78,7 @@ class MediaPlayer2(dbus.service.Object):
 			return dbus.Dictionary(S({
 				'mpris:trackid': dbus.ObjectPath(f"/org/mpris/MediaPlayer2/vkaudio/track/{id(self.app.track)}" if (self.app.track) else '/org/mpris/MediaPlayer2/TrackList/NoTrack'),
 				'mpris:length': dbus.Int64(max(0, self.app.p.get_length())*1000),
-				'mpris:artUrl': self.app.get_cover(self.app.track),
+				'mpris:artUrl': self.app.get_cover((self.app.track.get('covers') or (None,))[-1]),
 				'xesam:artist': Slist([self.app.track.get('artist')]).strip() or None,
 				'xesam:title': self.app.track.get('title'),
 				'xesam:url': self.app.track.get('url'),
@@ -244,12 +244,32 @@ class AlbumsView(SCLoadingSelectingListView):
 		self.toLoad = True
 		self.loading = True
 
+	# TODO FIXME: join with AudiosView's
+
+	@cachedfunction
+	def _color(self, album):
+		cover = self.app.get_cover(album.get('coverUrl'))
+		if (not cover): return None
+		return tuple(i*1000//255 for i in pixel_color(openimg(cover)))
+
+	def _pair(self, album):
+		if (curses.COLORS < 9 or not curses.can_change_color()): return 0
+		res = self._color(album)
+		if (res is None): return 0
+		r, g, b = res
+		color = 9#random.randrange(9, curses.COLORS)
+		curses.init_color(color, r, g, b)
+		pair = 2#random.randrange(9, curses.COLORS)
+		curses.init_pair(pair, color, curses.COLOR_WHITE if (max(r, g, b) < 500) else curses.COLOR_BLACK)
+		return curses.color_pair(pair)
+
 	def item(self, i):
 		ret, items = super().item(i)
 		if (not ret):
 			text, attrs = items[0]
 			text = S(self.l[i]['title']).fit(self.w)
-			items = [(text, attrs)]
+			color = self._pair(self.l[i]) if (attrs & curses.A_STANDOUT) else 0
+			items = [(text, attrs | color)]
 		return (ret, items)
 
 	def select(self):
@@ -308,15 +328,18 @@ class AudiosView(SCLoadingSelectingListView):
 		else: return super().key(c)
 		return True
 
-	@staticmethod
-	@lrucachedfunction
-	def _color(cover): return tuple(i*1000//255 for i in pixel_color(openimg(cover)))
+	@cachedfunction
+	def _color(self, track):
+		cover = self.app.get_cover((track.get('covers') or (None,))[-1])
+		if (not cover): return None
+		return tuple(i*1000//255 for i in pixel_color(openimg(cover)))
 
-	@classmethod
-	def _pair(cls, cover):
-		if (not curses.can_change_color()): return 0#curses.COLORS < 9 or
-		r, g, b = cls._color(cover)
-		color = 2#random.randrange(9, curses.COLORS)
+	def _pair(self, track):
+		if (curses.COLORS < 9 or not curses.can_change_color()): return 0
+		res = self._color(track)
+		if (res is None): return 0
+		r, g, b = res
+		color = 9#random.randrange(9, curses.COLORS)
 		curses.init_color(color, r, g, b)
 		pair = 2#random.randrange(9, curses.COLORS)
 		curses.init_pair(pair, color, curses.COLOR_WHITE if (max(r, g, b) < 500) else curses.COLOR_BLACK)
@@ -334,10 +357,7 @@ class AudiosView(SCLoadingSelectingListView):
 			text2 = S(self.l[i].get('subtitle', '')).fit(self.w - text1.fullwidth() - len(t_attrs) - 1)
 			text1 = text1.fit(self.w - text2.fullwidth() - len(t_attrs) - 1)
 			text3 = t_attrs.rjust(self.w - text1.fullwidth() - text2.fullwidth())
-			if (not attrs & curses.A_STANDOUT): color = 0
-			else:
-				cover = self.app.get_cover(self.l[i])
-				color = self._pair(cover) if (cover) else 0
+			color = self._pair(self.l[i]) if (attrs & curses.A_STANDOUT) else 0
 			items = [(text1, attrs | color), (text2, attrs | color | curses.A_DIM*(not attrs & curses.A_STANDOUT)), (text3, attrs | color)]
 		return (ret, items)
 
@@ -834,8 +854,7 @@ class App(SCApp):
 		return API.audio.getLyrics(lyrics_id=lyrics_id)['text'] if (lyrics_id is not None) else ''
 
 	@cachedfunction
-	def get_cover(self, track):
-		url = (track.get('covers') or ('',))[-1]
+	def get_cover(self, url):
 		if (not url): return None
 		cache_folder = os.path.expanduser('~/.cache/VKAudio/covers')
 		os.makedirs(cache_folder, exist_ok=True)
