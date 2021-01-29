@@ -162,7 +162,7 @@ class MediaPlayer2(dbus.service.Object):
 
 class VKAudioView(SCVSplitView):
 	def __init__(self):
-		super().__init__(-2)
+		super().__init__(0, 2)
 
 	def init(self):
 		super().init()
@@ -248,8 +248,8 @@ class AlbumsView(SCLoadingSelectingListView):
 
 	@cachedfunction
 	def _color(self, album):
-		cover = self.app.get_cover(album.get('coverUrl'))
-		if (not cover): return None
+		cover = self.app.get_cover(album.get('coverUrl'), delayed_view=self)
+		if (not cover): return self._color._noncached(None)
 		return tuple(i*1000//255 for i in pixel_color(openimg(cover)))
 
 	def _pair(self, album):
@@ -330,8 +330,8 @@ class AudiosView(SCLoadingSelectingListView):
 
 	@cachedfunction
 	def _color(self, track):
-		cover = self.app.get_cover((track.get('covers') or (None,))[-1])
-		if (not cover): return None
+		cover = self.app.get_cover((track.get('covers') or (None,))[-1], delayed_view=self)
+		if (not cover): return self._color._noncached(None)
 		return tuple(i*1000//255 for i in pixel_color(openimg(cover)))
 
 	def _pair(self, track):
@@ -408,8 +408,6 @@ class PlaylistView(AudiosView): # TODO
 	pass
 
 class LyricsView(SCView):
-	eh, ew = 18, 75
-
 	def __init__(self, lyrics_id):
 		super().__init__()
 		self.lyrics_id = lyrics_id
@@ -417,26 +415,31 @@ class LyricsView(SCView):
 		self.offset = int()
 
 	def init(self):
-		self.text = S(self.app.get_lyrics(self.lyrics_id)).wrap(self.ew-3)
+		self.text = S(self.app.get_lyrics(self.lyrics_id))
 
 	def draw(self, stdscr):
 		if (not self.touched): return True
 		self.touched = False
 		self.h, self.w = stdscr.getmaxyx()
-		ep = stdscr.subpad(self.eh, self.ew, (self.h-self.eh)//2, (self.w-self.ew)//2)
-		ep.addstr(0, 0, '╭'+'─'*(self.ew-2)+'╮')
-		for i in range(1, self.eh-1):
-			ep.addstr(i, 0, '│'+' '*(self.ew-2)+'│')
-		ep.addstr(self.eh-2, 0, '╰'+'─'*(self.ew-2)+'╯')
-		for ii, i in enumerate(self.text.split('\n')[self.offset:self.eh-3+self.offset]):
+		eh, ew = self.h-2, self.w-4
+		self.offset = max(0, min(self.offset, self.text.wrap(ew-3).count('\n')-eh+4))
+		ep = stdscr.subpad(eh, ew, 2, 2)
+
+		ep.addstr(0, 0, '╭'+'─'*(ew-2)+'╮')
+		for i in range(1, eh-1):
+			ep.addstr(i, 0, '│'+' '*(ew-2)+'│')
+		ep.addstr(eh-2, 0, '╰'+'─'*(ew-2)+'╯')
+
+		text = self.text.wrap(ew-3)
+		for ii, i in enumerate(text.split('\n')[self.offset:eh-3+self.offset]):
 			ep.addstr(ii+1, 2, i)
 
 	def key(self, c):
 		if (c == curses.KEY_UP):
-			self.offset = max(0, self.offset-1)
+			self.offset -= 1
 			self.touch()
 		elif (c == curses.KEY_DOWN):
-			self.offset = min(self.offset+1, self.text.count('\n')-self.eh+4)
+			self.offset += 1
 			self.touch()
 		else: return super().key(c)
 		return True
@@ -787,6 +790,7 @@ class App(SCApp):
 		self.p.get_instance().log_unset()
 		self.p.audio_set_volume(100)
 
+		self.dbus_eventloop = self.dbus = self.mpris = None
 		try: self.glib_eventloop = GLib.MainLoop()
 		except NameError: pass
 		else:
@@ -796,17 +800,19 @@ class App(SCApp):
 			self.mpris = MediaPlayer2(self, dbus.service.BusName('org.mpris.MediaPlayer2.vkaudio', bus=self.dbus), '/org/mpris/MediaPlayer2')
 			self.update_all()
 
-		try: raise Exception#notify2.init('VKAudio')
-		except Exception: self.notify = None
-		else:
-			self.notify = notify2.Notification('', icon='media-playback-start')
-			self.notify.set_category('x-gnome.music')
-			self.notify.set_urgency(notify2.URGENCY_LOW)
-			self.notify.set_hint('action-icons', True)
-			self.notify.connect('closed', noop)
-			self.notify.add_action('media-skip-backward', 'Previous track', lambda *_: self.playPrevTrack())
-			self.notify.add_action('media-playback-pause', 'Pause', lambda *_: self.playPause())
-			self.notify.add_action('media-skip-forward', 'Next track', lambda *_: self.playNextTrack())
+		self.notify = None
+		if (self.mpris is None):
+			try: raise notify2.init('VKAudio')
+			except Exception: pass
+			else:
+				self.notify = notify2.Notification('', icon='media-playback-start')
+				self.notify.set_category('x-gnome.music')
+				self.notify.set_urgency(notify2.URGENCY_LOW)
+				self.notify.set_hint('action-icons', True)
+				self.notify.connect('closed', noop)
+				self.notify.add_action('media-skip-backward', 'Previous track', lambda *_: self.playPrevTrack())
+				self.notify.add_action('media-playback-pause', 'Pause', lambda *_: self.playPause())
+				self.notify.add_action('media-skip-forward', 'Next track', lambda *_: self.playNextTrack())
 
 		self.user_id = user()[0]['id']
 
@@ -853,8 +859,19 @@ class App(SCApp):
 	def get_lyrics(self, lyrics_id):
 		return API.audio.getLyrics(lyrics_id=lyrics_id)['text'] if (lyrics_id is not None) else ''
 
+	_get_cover_thread = dict()
+	def get_cover(self, url, *, delayed_view=None):
+		if (delayed_view is None or self._get_cover.is_cached(url)): return self._get_cover(url)
+		thread = self._get_cover_thread.get(url)
+		if (thread is None):
+			thread = self._get_cover_thread[url] = threading.Thread(target=lambda: self._get_cover(url) and delayed_view.touch(), daemon=True)
+			thread.start()
+		elif (not thread.is_alive()):
+			del self._get_cover_thread[url]
+			return self._get_cover(url)
+		return None
 	@cachedfunction
-	def get_cover(self, url):
+	def _get_cover(self, url):
 		if (not url): return None
 		cache_folder = os.path.expanduser('~/.cache/VKAudio/covers')
 		os.makedirs(cache_folder, exist_ok=True)
@@ -1102,4 +1119,4 @@ if (__name__ == '__main__'):
 	exit(main())
 else: logimported()
 
-# by Sdore, 2020
+# by Sdore, 2021
