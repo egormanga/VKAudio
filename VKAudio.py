@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # VK Audio Player
 
-import vlc, notify2, dbus.service, dbus.mainloop.glib
+import vlc, notify2, requests, dbus.service, dbus.mainloop.glib
 from api import *
 from cimg import *
 from Scurses import *
